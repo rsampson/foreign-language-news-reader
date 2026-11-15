@@ -2,7 +2,8 @@
 
 Learn French by reading the day's news. The app shows the top 10 stories from
 Le Monde as short summaries, French on the left and English on the right, and
-links the two languages sentence by sentence and word by word.
+links the two languages sentence by sentence and word by word. Any other web
+page can be read the same way.
 
 ![The app with a sentence highlighted in both languages, its words coloured by part of speech, and one matching word pair marked](screenshot.png)
 
@@ -28,10 +29,25 @@ instant.
 | Look at the highlighted sentence | Each word is coloured by its part of speech. The key at the bottom of the window explains the colours. |
 | Move the mouse over a word | The word and the word or words that translate it turn into dark boxes. A word with no counterpart highlights on its own side only. |
 | Click the red ► before a French sentence | The sentence is read aloud in French. Clicking another ► interrupts it. |
-| Click **Refresh** | The latest news is fetched again, replacing today's saved stories. |
+| Click **Refresh** | The news, or the web page on screen, is fetched again, replacing today's saved copy. |
 
 Everything works from either panel: you can hover the English to find the
 French, or the other way round.
+
+## Reading any web page
+
+The app opens on the news. To read something else, paste a web address into
+the **Web page** box and press Enter or click **Read this page**. Click
+**Back to Le Monde news** to return to the news.
+
+- The page can be in any language. The AI divides it into up to 10 sections,
+  each with a French headline, a short French summary and its English
+  translation.
+- It is a summary, not the whole page: only the first 12,000 characters of the
+  page's readable text are used, so long pages are covered from the top.
+- Pages that need a login, or that build their content with JavaScript, give a
+  "No readable text found" message. PDFs and other files are not supported.
+- Each page is saved for the day, so loading the same address again is instant.
 
 ## Choosing the AI (Settings)
 
@@ -71,7 +87,7 @@ user account.
 |---|---|
 | `news_reader.py` | The whole app. |
 | `settings.json` | Your AI choice, created when you first save Settings. |
-| `cache/` | One file per day of saved stories. Safe to delete. |
+| `cache/` | Saved stories: one file per day for the news and one per web page per day. Safe to delete. |
 | `.venv/` | Piper, the program that produces the French voice. |
 | `voices/` | The French voice model (`fr_FR-siwis-medium`, about 63 MB). |
 
@@ -90,7 +106,9 @@ python3 -m venv .venv
 The constants at the top of `news_reader.py` control:
 
 - `FEED_URL` and `FEED_NAME`: the news source (any RSS feed in French).
-- `ITEM_COUNT`: how many stories to show.
+- `ITEM_COUNT`: how many stories to show, and the most sections made from a
+  web page.
+- `MAX_PAGE_CHARS`: how much of a web page's text is given to the AI.
 - `PIPER_VOICE` and `PIPER_LENGTH_SCALE`: the voice and its speed (above 1 is
   slower).
 - `PARTS_OF_SPEECH`: the colours and labels in the key.
