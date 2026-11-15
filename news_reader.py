@@ -420,12 +420,13 @@ class NewsReader:
         bar.pack(fill="x", padx=16, pady=(10, 0))
         self.status = tk.Label(bar, bg=BG, fg=MUTED, font=self.label_font,
                                anchor="w")
-        self.status.pack(side="left", fill="x", expand=True)
         self.refresh_btn = tk.Button(bar, text="Refresh", relief="flat",
                                      command=lambda: self.load(force=True))
         self.refresh_btn.pack(side="right")
         tk.Button(bar, text="Settings", relief="flat",
                   command=self.open_settings).pack(side="right", padx=(0, 6))
+        # Packed after the buttons so a long status line cannot squeeze them.
+        self.status.pack(side="left", fill="x", expand=True)
         self.settings = load_settings()
 
         self._make_key(root)  # packed at the bottom before the panes expand
@@ -526,13 +527,11 @@ class NewsReader:
                           before=self.panes)
         elif not has_words:
             self.key.pack_forget()
-        hints = "hover a sentence to see its translation"
-        if has_words:
-            hints += ", a word to see its counterpart"
+        hints = "hover a sentence or word" if has_words else "hover a sentence"
         self.status.config(
             text=f"{FEED_NAME} · {datetime.date.today():%d %B %Y} · "
                  f"{len(stories)} stories by {result.get('ai', '?')} · "
-                 f"{hints}; click {SPEAK_GLYPH} to hear the French")
+                 f"{hints} for its translation · {SPEAK_GLYPH} speaks the French")
 
     # -- settings
 

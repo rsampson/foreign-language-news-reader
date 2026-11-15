@@ -4,6 +4,8 @@ Learn French by reading the day's news. The app shows the top 10 stories from
 Le Monde as short summaries, French on the left and English on the right, and
 links the two languages sentence by sentence and word by word.
 
+![The app with a sentence highlighted in both languages, its words coloured by part of speech, and one matching word pair marked](screenshot.png)
+
 ## Starting the app
 
 From the applications menu, search for **French News Reader**.
