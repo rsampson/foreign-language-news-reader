@@ -92,6 +92,26 @@ the **Web page** box and press Enter or click **Read this page**. Click
   "No readable text found" message. PDFs and other files are not supported.
 - Each page is saved for the day, so loading the same address again is instant.
 
+## Do I need an API key?
+
+Not if you already use Claude Code. The app can reach an AI in two ways that
+are billed differently:
+
+- **With a Claude Pro or Max subscription and no key.** If the Claude Code
+  command-line tool is installed and signed in on your computer, the app finds
+  it and uses it automatically; you are never asked for a key. Each time the
+  news is fetched, it uses some of your subscription's allowance, the same
+  pool your Claude Code sessions draw from. To switch to it on a computer
+  where the welcome screen appeared, click **Other options…** (or
+  **Settings**) and choose **Claude Code command-line tool**.
+- **With an API key.** For everyone else. A key comes from a separate
+  developer account with an AI service and is billed per use, typically a few
+  cents for a day's news. A Claude Pro or Max subscription does not include an
+  API key; they are separate products.
+
+Either way, the day's stories are saved after the first fetch, so the AI is
+used once per day unless you click **Refresh** or load a web page.
+
 ## Choosing the AI (Settings)
 
 Click **Settings** to choose which AI writes the summaries and translations.
