@@ -20,14 +20,21 @@ The app itself needs only the standard library. Run:  python3 news_reader.py
 import datetime
 import hashlib
 import html.parser
+import importlib.util
 import json
+import os
 import re
 import shutil
+import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
+import tkinter.ttk as ttk
+import wave
+import webbrowser
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,22 +48,78 @@ MAX_PAGE_BYTES = 3_000_000  # how much of a web page to download
 MAX_PAGE_CHARS = 12_000     # how much of its text to give the AI
 MIN_LINE_CHARS = 30         # shorter lines of a page are treated as clutter
 AI_TIMEOUT_S = 1800  # local models on a CPU can be slow
+
+APP_NAME = "French News Reader"
+APP_ID = "french-news-reader"
+VERSION = "1.0.0"
+FROZEN = getattr(sys, "frozen", False)  # True inside the packaged app
 APP_DIR = Path(__file__).resolve().parent
-SETTINGS_FILE = APP_DIR / "settings.json"
+# Read-only files shipped with the app (voice model, icon).
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+
+
+def _user_data_dir():
+    """Where settings and the cache live.
+
+    Run from source, that is the app folder. The packaged app cannot write
+    next to itself, so it uses the per-user data folder of the system.
+    """
+    if not FROZEN:
+        return APP_DIR
+    home = Path.home()
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = home / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share")
+    return base / APP_ID
+
+
+DATA_DIR = _user_data_dir()
+SETTINGS_FILE = DATA_DIR / "settings.json"
+
+try:  # the packaged app carries its own certificate list for HTTPS
+    import certifi
+    SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    SSL_CONTEXT = None  # use the system's certificates
 
 # Which AI writes the summaries. Changed from the Settings button and saved
 # in settings.json. "openai" is any service speaking the OpenAI chat API
 # (OpenAI, Mistral, Groq, OpenRouter, Gemini's compatible endpoint, ...).
 PROVIDERS = {
-    "claude": "Claude (claude command-line tool)",
+    "anthropic": "Claude, with an Anthropic API key",
+    "openai": "OpenAI-compatible service, with an API key",
     "ollama": "Ollama (model running on this computer)",
-    "openai": "OpenAI-compatible service (needs an API key)",
+    "claude": "Claude Code command-line tool (uses a Claude subscription)",
 }
+# Services offered on the first-launch screen:
+# (name, provider, API address, page where a key is created).
+KEY_SERVICES = [
+    ("Anthropic (Claude) \u2014 recommended", "anthropic", "",
+     "https://platform.claude.com/settings/keys"),
+    ("OpenAI", "openai", "https://api.openai.com/v1",
+     "https://platform.openai.com/api-keys"),
+    ("Google Gemini", "openai",
+     "https://generativelanguage.googleapis.com/v1beta/openai",
+     "https://aistudio.google.com/apikey"),
+    ("Mistral", "openai", "https://api.mistral.ai/v1",
+     "https://console.mistral.ai/api-keys"),
+]
+# Claude models that accept the server-side refusal fallback.
+ANTHROPIC_FALLBACK_MODELS = {
+    "claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5",
+    "claude-opus-5", "claude-sonnet-5-5"}
 DEFAULT_SETTINGS = {
-    "provider": "claude",
+    # "" means not chosen yet: the first-launch screen asks. Someone with the
+    # Claude Code command-line tool installed starts on that instead.
+    "provider": "claude" if shutil.which("claude") else "",
     # Word detail = parts of speech and word-to-word matching. It needs a
     # strong model; turn it off for an AI that cannot produce it reliably.
     "word_detail": True,
+    "anthropic_model": "claude-opus-5-5",
+    "anthropic_key": "",
     "claude_model": "sonnet",
     "ollama_url": "http://localhost:11434",
     "ollama_model": "gemma4:latest",
@@ -64,17 +127,22 @@ DEFAULT_SETTINGS = {
     "openai_model": "",
     "openai_key": "",
 }
-# Piper neural voice (preferred). Installed in the project's virtualenv:
-#   python3 -m venv .venv && .venv/bin/pip install piper-tts
-#   .venv/bin/python -m piper.download_voices --data-dir voices fr_FR-siwis-medium
-PIPER_PYTHON = APP_DIR / ".venv" / "bin" / "python"
+# Piper neural voice. The packaged app includes it; run from source it needs
+# `pip install piper-tts` and the voice model in voices/ (see the README).
 PIPER_VOICE = "fr_FR-siwis-medium"
-VOICE_DIR = APP_DIR / "voices"
+VOICE_DIRS = [RESOURCE_DIR / "voices", DATA_DIR / "voices"]
 PIPER_LENGTH_SCALE = 1.15  # above 1 is slower; a little slow for learners
-PLAYER = shutil.which("pw-play") or shutil.which("paplay") or shutil.which("aplay")
-SPD_SAY_RATE = -20  # fallback voice: -100 (slowest) to 100
+if sys.platform == "darwin":
+    PLAYER = shutil.which("afplay")
+elif sys.platform == "win32":
+    PLAYER = None  # Windows plays sound through its own winsound module
+else:
+    PLAYER = (shutil.which("pw-play") or shutil.which("paplay")
+              or shutil.which("aplay"))
+SPD_SAY_RATE = -20  # Linux fallback voice: -100 (slowest) to 100
+SPEECH_WAV = Path(tempfile.gettempdir()) / f"{APP_ID}-speech-{os.getpid()}.wav"
 SPEAK_GLYPH = "\u25ba"  # the small play button in front of each French sentence
-CACHE_DIR = APP_DIR / "cache"
+CACHE_DIR = DATA_DIR / "cache"
 
 BG = "#fbf9f4"
 FG = "#22201c"
@@ -164,7 +232,7 @@ in the other language gets 0.
 def fetch_feed():
     """Return the top ITEM_COUNT feed items as dicts with title/description."""
     req = urllib.request.Request(FEED_URL, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with urllib.request.urlopen(req, timeout=20, context=SSL_CONTEXT) as resp:
         root = ET.fromstring(resp.read())
     items = []
     for node in root.iter("item"):
@@ -293,7 +361,7 @@ def fetch_page(url):
     """Download a web page and return {"title", "text"} of readable text."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as resp:
             kind = resp.headers.get_content_type()
             if kind not in ("text/html", "application/xhtml+xml", "text/plain"):
                 raise RuntimeError(f"That address is not a web page ({kind}).")
@@ -341,6 +409,7 @@ def load_settings():
 
 
 def save_settings(settings):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.touch(mode=0o600, exist_ok=True)  # it may hold an API key
     SETTINGS_FILE.chmod(0o600)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=1), encoding="utf-8")
@@ -349,6 +418,8 @@ def save_settings(settings):
 def ai_label(settings):
     """Short name of the configured AI, for the status bar and the cache."""
     provider = settings["provider"]
+    if provider not in PROVIDERS:
+        return "no AI chosen"
     return f"{provider}:{settings[provider + '_model']}"
 
 
@@ -361,7 +432,8 @@ def ask_claude(prompt, settings):
                 ["claude", "-p", "--model", settings["claude_model"],
                  "--tools", ""],
                 input=prompt, capture_output=True, text=True,
-                timeout=AI_TIMEOUT_S, cwd=cwd)
+                timeout=AI_TIMEOUT_S, cwd=cwd,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except FileNotFoundError:
         raise RuntimeError("The 'claude' command was not found on PATH.")
     except subprocess.TimeoutExpired:
@@ -372,15 +444,22 @@ def ask_claude(prompt, settings):
     return proc.stdout
 
 
-def post_json(url, payload, headers=None):
-    """POST a JSON payload and return the decoded JSON reply."""
+def post_json(url, payload, headers=None, timeout=AI_TIMEOUT_S):
+    """Send JSON (POST), or fetch (GET when payload is None); return JSON."""
     req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **(headers or {})})
+        url, data=None if payload is None else json.dumps(payload).encode("utf-8"),
+        # Some services turn away urllib's default User-Agent.
+        headers={"Content-Type": "application/json",
+                 "User-Agent": f"{APP_ID}/{VERSION}", **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=AI_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=SSL_CONTEXT) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                "The AI service did not accept the API key. Check it in "
+                "Settings.")
         detail = exc.read().decode("utf-8", "replace").strip()[:300]
         raise RuntimeError(f"{url} answered {exc.code}: {detail}")
     except (urllib.error.URLError, TimeoutError) as exc:
@@ -417,7 +496,73 @@ def ask_openai(prompt, settings):
                            + json.dumps(reply)[:300])
 
 
-ASK = {"claude": ask_claude, "ollama": ask_ollama, "openai": ask_openai}
+def list_models(url, key):
+    """Names of the models an OpenAI-compatible service offers this key."""
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    reply = post_json(url.rstrip("/") + "/models", None, headers, timeout=30)
+    try:
+        names = sorted(str(m["id"]).removeprefix("models/")
+                       for m in reply["data"])
+    except (KeyError, TypeError):
+        raise RuntimeError("The service did not return a list of models.")
+    if not names:
+        raise RuntimeError("The service offers no models to this key.")
+    return names
+
+
+def ask_anthropic(prompt, settings):
+    """Claude through Anthropic's API, with the user's own API key."""
+    try:
+        import anthropic
+    except ImportError:
+        raise RuntimeError("Using Claude with an API key needs the "
+                           "'anthropic' package: pip install anthropic")
+    if not settings["anthropic_key"]:
+        raise RuntimeError("No Anthropic API key is set. Open Settings to "
+                           "add one.")
+    client = anthropic.Anthropic(api_key=settings["anthropic_key"])
+    model = settings["anthropic_model"]
+    request = dict(model=model, max_tokens=64000,
+                   messages=[{"role": "user", "content": prompt}])
+    try:
+        # Streamed, because a full day's news is a long answer.
+        if model in ANTHROPIC_FALLBACK_MODELS:
+            # If a safety filter declines (news covers wars and attacks),
+            # let the API retry on a fallback model instead of failing.
+            stream = client.beta.messages.stream(
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default", **request)
+        else:
+            stream = client.messages.stream(**request)
+        with stream as running:
+            message = running.get_final_message()
+    except anthropic.AuthenticationError:
+        raise RuntimeError("Anthropic did not accept the API key. Check it "
+                           "in Settings.")
+    except anthropic.PermissionDeniedError:
+        raise RuntimeError("This Anthropic API key is not allowed to use "
+                           f"the model {model}.")
+    except anthropic.NotFoundError:
+        raise RuntimeError(f"Anthropic has no model named {model}. Change "
+                           "it in Settings.")
+    except anthropic.RateLimitError:
+        raise RuntimeError("Anthropic's rate limit was reached, or the "
+                           "account is out of credit. Try again later.")
+    except anthropic.APIStatusError as exc:
+        raise RuntimeError(f"Anthropic API error {exc.status_code}: "
+                           f"{exc.message}"[:300])
+    except anthropic.APIConnectionError:
+        raise RuntimeError("Could not reach Anthropic. Check the internet "
+                           "connection.")
+    if message.stop_reason == "refusal":
+        raise RuntimeError("Claude declined to summarise this content.")
+    if message.stop_reason == "max_tokens":
+        raise RuntimeError("Claude's answer was cut off before it finished.")
+    return "".join(b.text for b in message.content if b.type == "text")
+
+
+ASK = {"anthropic": ask_anthropic, "claude": ask_claude,
+       "ollama": ask_ollama, "openai": ask_openai}
 
 
 def summarise(task, count, content, settings):
@@ -428,6 +573,8 @@ def summarise(task, count, content, settings):
         detail=PROMPT_DETAIL.format(tags=", ".join(PARTS_OF_SPEECH))
         if detail else "",
         example=EXAMPLE_DETAIL if detail else EXAMPLE_PLAIN)
+    if settings["provider"] not in ASK:
+        raise RuntimeError("No AI has been chosen yet. Open Settings.")
     return parse_stories(ASK[settings["provider"]](prompt, settings))
 
 
@@ -509,30 +656,50 @@ def locate_words(sentence, words):
         yield at, cursor, pos, link
 
 
-_speech_lock = threading.Lock()
-_speech_proc = None  # the piper or player process currently running
+_speech_lock = threading.Lock()   # guards the three values below
+_synth_lock = threading.Lock()    # one sentence is synthesised at a time
 _speech_turn = 0     # bumped on every request so older ones give up
+_player_proc = None  # the program playing the current sentence, if any
+_voice = None        # the loaded Piper voice
+
+
+def voice_model():
+    """Path of the French voice model, or None if it is not installed."""
+    for folder in VOICE_DIRS:
+        model = folder / f"{PIPER_VOICE}.onnx"
+        if model.exists():
+            return model
+    return None
 
 
 def piper_available():
-    return (PIPER_PYTHON.exists() and PLAYER
-            and (VOICE_DIR / f"{PIPER_VOICE}.onnx").exists())
+    return (voice_model() is not None
+            and importlib.util.find_spec("piper") is not None
+            and (PLAYER is not None or sys.platform == "win32"))
 
 
 def speech_available():
     return bool(piper_available() or shutil.which("spd-say"))
 
 
-def _run_speech_step(turn, command):
-    """Run one speech subprocess unless a newer request has taken over."""
-    global _speech_proc
-    with _speech_lock:
-        if turn != _speech_turn:
-            return False
-        _speech_proc = subprocess.Popen(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        proc = _speech_proc
-    return proc.wait() == 0
+def synthesise(sentence, wav_path):
+    """Write the sentence, spoken by the Piper voice, to a WAV file."""
+    global _voice
+    from piper import PiperVoice, SynthesisConfig
+    if _voice is None:
+        _voice = PiperVoice.load(str(voice_model()))
+    with wave.open(str(wav_path), "wb") as wav_file:
+        _voice.synthesize_wav(
+            sentence, wav_file,
+            syn_config=SynthesisConfig(length_scale=PIPER_LENGTH_SCALE))
+
+
+def _stop_playback():
+    if sys.platform == "win32":
+        import winsound
+        winsound.PlaySound(None, winsound.SND_PURGE)
+    elif _player_proc and _player_proc.poll() is None:
+        _player_proc.kill()
 
 
 def speak_french(sentence):
@@ -544,23 +711,31 @@ def speak_french(sentence):
     with _speech_lock:
         _speech_turn += 1
         turn = _speech_turn
-        if _speech_proc and _speech_proc.poll() is None:
-            _speech_proc.kill()  # stop the previous sentence
+        _stop_playback()
 
     def run():
+        global _player_proc
         if not piper_available():
             subprocess.run(["spd-say", "-C"], capture_output=True)
-            _run_speech_step(turn, ["spd-say", "-l", "fr", "-r",
-                                    str(SPD_SAY_RATE), "--", sentence])
+            subprocess.run(["spd-say", "-l", "fr", "-r", str(SPD_SAY_RATE),
+                            "--", sentence], capture_output=True)
             return
-        with tempfile.TemporaryDirectory() as tmp:
-            wav = str(Path(tmp) / "sentence.wav")
-            if _run_speech_step(turn, [
-                    str(PIPER_PYTHON), "-m", "piper", "-m", PIPER_VOICE,
-                    "--data-dir", str(VOICE_DIR),
-                    "--length-scale", str(PIPER_LENGTH_SCALE),
-                    "-f", wav, "--", sentence]):
-                _run_speech_step(turn, [PLAYER, wav])
+        with _synth_lock:
+            if turn != _speech_turn:
+                return  # a newer sentence was requested meanwhile
+            synthesise(sentence, SPEECH_WAV)
+            with _speech_lock:
+                if turn != _speech_turn:
+                    return
+                if sys.platform == "win32":
+                    import winsound
+                    winsound.PlaySound(
+                        str(SPEECH_WAV),
+                        winsound.SND_FILENAME | winsound.SND_ASYNC)
+                else:
+                    _player_proc = subprocess.Popen(
+                        [PLAYER, str(SPEECH_WAV)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -598,7 +773,7 @@ def load_stories(settings, url=None, force=False):
         result = {"title": FEED_NAME,
                   "stories": summarise_news(fetch_feed(), settings)}
     result["ai"] = ai_label(settings)
-    CACHE_DIR.mkdir(exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return result
@@ -609,9 +784,18 @@ def load_stories(settings, url=None, force=False):
 class NewsReader:
     def __init__(self, root):
         self.root = root
-        root.title(f"Lire les nouvelles — {FEED_NAME}")
+        root.title(APP_NAME)
         root.geometry("1280x820")
         root.configure(bg=BG)
+        for icon in (RESOURCE_DIR / "icon.png",
+                     RESOURCE_DIR / "packaging" / "icon.png"):
+            if icon.exists():
+                try:
+                    self.icon = tk.PhotoImage(file=str(icon))
+                    root.iconphoto(True, self.icon)
+                except tk.TclError:
+                    pass  # an icon is only decoration
+                break
 
         base = tkfont.nametofont("TkTextFont").actual("family")
         self.body_font = tkfont.Font(family=base, size=13)
@@ -664,7 +848,11 @@ class NewsReader:
         self.french = {}  # sentence tag -> French sentence, for speaking
         # panel -> sentence tag -> [(start index, end index, pos, link), ...]
         self.words = {text: {} for text in self.panels.values()}
-        self.load()
+        if self.settings["provider"]:
+            self.load()
+        else:  # first launch: nothing can load until an AI is chosen
+            self.status.config(text="Choose an AI service to begin.")
+            root.after(200, self.open_welcome)
 
     def _make_key(self, root):
         """Legend explaining the part-of-speech colours."""
@@ -784,6 +972,127 @@ class NewsReader:
 
     # -- settings
 
+    def _model_picker(self, parent, model_var, get_url, get_key, note):
+        """A model box with a button that asks the service what it offers."""
+        box = ttk.Combobox(parent, textvariable=model_var, width=30)
+        box.pack(side="left")
+
+        def fetch():
+            note.config(text="Asking the service for its models\u2026")
+            url, key = get_url(), get_key()
+
+            def work():
+                try:
+                    result = list_models(url, key), None
+                except Exception as exc:
+                    result = None, str(exc)
+                self.root.after(0, done, *result)
+
+            def done(names, error):
+                if not box.winfo_exists():
+                    return
+                if error:
+                    note.config(text=error)
+                    return
+                box.config(values=names)
+                note.config(text=f"{len(names)} models found. Pick one from "
+                                 "the Model list.")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        tk.Button(parent, text="List models", command=fetch).pack(
+            side="left", padx=(6, 0))
+        return box
+
+    def open_welcome(self):
+        """First-launch screen: pick an AI service and paste an API key."""
+        win = tk.Toplevel(self.root, bg=BG, padx=22, pady=16)
+        win.title(f"Welcome to {APP_NAME}")
+        win.transient(self.root)
+        win.resizable(False, False)
+        choice = tk.IntVar(value=0)
+        key = tk.StringVar()
+        model = tk.StringVar()
+
+        def text(message, **options):
+            options = {"fg": FG, "pady": (0, 8), **options}
+            pady = options.pop("pady")
+            label = tk.Label(win, text=message, bg=BG, justify="left",
+                             anchor="w", wraplength=520, **options)
+            label.pack(fill="x", pady=pady)
+            return label
+
+        text(f"Welcome to {APP_NAME}", font=self.head_font)
+        text("This app uses an AI service to write the French summaries and "
+             "their English translations. You need your own key for one of "
+             "these services. The service bills you for what you use; a "
+             "day's news typically costs a few cents.")
+        text("1.  CHOOSE A SERVICE", fg=MUTED, font=self.label_font,
+             pady=(6, 2))
+        for number, (name, _, _, _) in enumerate(KEY_SERVICES):
+            tk.Radiobutton(win, text=name, variable=choice, value=number,
+                           bg=BG, fg=FG, activebackground=BG, anchor="w",
+                           highlightthickness=0,
+                           command=lambda: refresh()).pack(fill="x")
+        text("2.  GET A KEY AND PASTE IT HERE", fg=MUTED,
+             font=self.label_font, pady=(10, 2))
+        link = text("", fg="#1a5fb4", cursor="hand2", pady=(0, 4))
+        link.bind("<Button-1>",
+                  lambda e: webbrowser.open(KEY_SERVICES[choice.get()][3]))
+        tk.Entry(win, textvariable=key, show="\u2022", width=56).pack(
+            anchor="w")
+        model_title = text("3.  CHOOSE A MODEL", fg=MUTED,
+                           font=self.label_font, pady=(10, 2))
+        model_row = tk.Frame(win, bg=BG)
+        model_row.pack(fill="x")
+        note = text("", fg=MUTED, pady=(6, 0))
+        self._model_picker(model_row, model,
+                           lambda: KEY_SERVICES[choice.get()][2],
+                           lambda: key.get().strip(), note)
+
+        def refresh():
+            name, provider, _, page = KEY_SERVICES[choice.get()]
+            host = urllib.parse.urlsplit(page).netloc
+            link.config(text=f"Create a key at {host} (opens your browser)")
+            needs_model = provider != "anthropic"
+            for widget in [model_title, *model_row.winfo_children()]:
+                widget.config(state="normal" if needs_model else "disabled")
+            note.config(text="Paste the key, click List models, then pick a "
+                             "capable general-purpose model." if needs_model
+                        else "No model to choose: Claude Opus is used.")
+
+        def start():
+            _, provider, url, _ = KEY_SERVICES[choice.get()]
+            if not key.get().strip():
+                note.config(text="Paste your API key first.")
+                return
+            if provider == "openai" and not model.get().strip():
+                note.config(text="Choose a model first: click List models.")
+                return
+            self.settings = dict(self.settings, provider=provider)
+            self.settings[provider + "_key"] = key.get().strip()
+            if provider == "openai":
+                self.settings.update(openai_url=url,
+                                     openai_model=model.get().strip())
+            save_settings(self.settings)
+            win.destroy()
+            self.load()
+
+        def other():
+            win.destroy()
+            self.open_settings()
+
+        text("Your key is saved only on this computer. The news text and "
+             "any web page you load are sent to the service you choose.",
+             fg=MUTED, pady=(12, 0))
+        buttons = tk.Frame(win, bg=BG)
+        buttons.pack(fill="x", pady=(14, 0))
+        tk.Button(buttons, text="Start reading", command=start).pack(
+            side="right")
+        tk.Button(buttons, text="Other options\u2026", command=other).pack(
+            side="right", padx=6)
+        refresh()
+
     def open_settings(self):
         """Dialog for choosing which AI writes the summaries."""
         win = tk.Toplevel(self.root, bg=BG, padx=18, pady=14)
@@ -799,30 +1108,40 @@ class NewsReader:
             tk.Label(win, text=text, bg=BG, fg=MUTED, font=self.label_font,
                      anchor="w").pack(fill="x", pady=(10, 2))
 
-        def field(parent, label, key, secret=False):
-            row = tk.Frame(parent, bg=BG)
+        def field(label, key, kind="text"):
+            row = tk.Frame(win, bg=BG)
             row.pack(fill="x", padx=(24, 0), pady=1)
             tk.Label(row, text=label, bg=BG, fg=FG, width=10,
                      anchor="w").pack(side="left")
             fields[key] = tk.StringVar(value=current[key])
-            tk.Entry(row, textvariable=fields[key], width=42,
-                     show="\u2022" if secret else "").pack(side="left")
+            if kind == "models":  # the OpenAI-compatible model name
+                self._model_picker(
+                    row, fields[key], lambda: fields["openai_url"].get(),
+                    lambda: fields["openai_key"].get().strip(), note)
+            else:
+                tk.Entry(row, textvariable=fields[key], width=42,
+                         show="\u2022" if kind == "secret" else "").pack(
+                             side="left")
 
+        note = tk.Label(win, bg=BG, fg=MUTED, justify="left", anchor="w",
+                        wraplength=470)
         heading("AI THAT WRITES THE SUMMARIES")
         layout = {
-            "claude": [("Model", "claude_model", False)],
-            "ollama": [("Address", "ollama_url", False),
-                       ("Model", "ollama_model", False)],
-            "openai": [("Address", "openai_url", False),
-                       ("Model", "openai_model", False),
-                       ("API key", "openai_key", True)],
+            "anthropic": [("Model", "anthropic_model"),
+                          ("API key", "anthropic_key", "secret")],
+            "openai": [("Address", "openai_url"),
+                       ("API key", "openai_key", "secret"),
+                       ("Model", "openai_model", "models")],
+            "ollama": [("Address", "ollama_url"),
+                       ("Model", "ollama_model")],
+            "claude": [("Model", "claude_model")],
         }
         for name, label in PROVIDERS.items():
             tk.Radiobutton(win, text=label, variable=provider, value=name,
                            bg=BG, fg=FG, activebackground=BG, anchor="w",
                            highlightthickness=0).pack(fill="x")
             for row in layout[name]:
-                field(win, *row)
+                field(*row)
 
         heading("FEATURES")
         tk.Checkbutton(
@@ -831,12 +1150,15 @@ class NewsReader:
             text="Word detail: part-of-speech colours and word-to-word "
                  "matching.\nTurn off for an AI that is too slow or "
                  "unreliable to produce it.").pack(fill="x")
-        tk.Label(win, bg=BG, fg=MUTED, justify="left", anchor="w",
-                 text="The API key is stored in settings.json in the app "
-                      "folder, readable only by you.\nChanges apply the next "
-                      "time the news is fetched.").pack(fill="x", pady=(10, 0))
+        note.config(text="API keys are stored as plain text in "
+                         f"{SETTINGS_FILE}. Changes apply the next time the "
+                         "news is fetched.")
+        note.pack(fill="x", pady=(10, 0))
 
         def save(refresh):
+            if provider.get() not in PROVIDERS:
+                note.config(text="Choose one of the AI options first.")
+                return
             self.settings = {
                 "provider": provider.get(), "word_detail": detail.get(),
                 **{key: var.get().strip() for key, var in fields.items()}}
@@ -931,7 +1253,8 @@ class NewsReader:
                     speak_french(self.french[tag])
                 else:
                     self.status.config(
-                        text="Cannot speak: no Piper voice or spd-say found.")
+                        text="Cannot speak: the French voice is not installed "
+                             "(see the README).")
                 return
 
     def on_leave(self):
@@ -979,8 +1302,79 @@ class NewsReader:
                 text.see(ranges[0])
 
 
+def self_test(report_path=None):
+    """Check that everything the app needs is present and working.
+
+    Used by the release builds: run as `--self-test [report file]`. It needs
+    no network, display or API key. Returns 0 when every check passes.
+    """
+    lines, failed = [], False
+
+    def check(name, action):
+        nonlocal failed
+        try:
+            detail = action()
+            lines.append(f"ok    {name}" + (f": {detail}" if detail else ""))
+        except Exception as exc:
+            failed = True
+            lines.append(f"FAIL  {name}: {type(exc).__name__}: {exc}")
+
+    def parsing():
+        reply = ('[{"sentences": [{"fr": "Le chat dort.", "en": "The cat '
+                 'sleeps.", "fr_pos": "Le/DET/1 chat/NOUN/2 dort/VERB/3", '
+                 '"en_pos": "The/DET/1 cat/NOUN/2 sleeps/VERB/3"}]}]')
+        pair = parse_stories(reply)[0][0]
+        assert len(list(locate_words(pair["fr"], pair["fr_pos"]))) == 3
+
+    def page_text():
+        page = _PageText()
+        page.feed("<title>T</title><article><p>" + "mot " * 200 + "</p>"
+                  "<div class='ad-slot'><p>" + "pub " * 20 + "</p></div>"
+                  "</article>")
+        title, text = page.result()
+        assert title == "T" and "mot" in text and "pub" not in text
+
+    def voice():
+        target = Path(tempfile.gettempdir()) / f"{APP_ID}-selftest.wav"
+        synthesise("Bonjour, ceci est un essai.", target)
+        with wave.open(str(target)) as audio:
+            seconds = audio.getnframes() / audio.getframerate()
+        target.unlink()
+        assert seconds > 0.5, f"only {seconds:.2f}s of audio"
+        return f"{seconds:.1f}s of speech"
+
+    def anthropic_sdk():
+        import anthropic
+        return anthropic.__version__
+
+    def https():
+        assert not FROZEN or SSL_CONTEXT is not None, "certifi is missing"
+
+    check("parse an AI reply", parsing)
+    check("extract web page text", page_text)
+    check("window toolkit", lambda: f"Tk {tk.Tcl().eval('info patchlevel')}")
+    check("HTTPS certificates", https)
+    check("Anthropic library", anthropic_sdk)
+    check("voice model present", lambda: voice_model().name)
+    check("French speech", voice)
+    report = "\n".join([f"{APP_NAME} {VERSION} self-test", *lines,
+                        "FAILED" if failed else "PASSED"]) + "\n"
+    if report_path:
+        Path(report_path).write_text(report, encoding="utf-8")
+    elif sys.stdout:
+        sys.stdout.write(report)
+    return 1 if failed else 0
+
+
 def main():
-    root = tk.Tk()
+    if "--self-test" in sys.argv:
+        rest = sys.argv[sys.argv.index("--self-test") + 1:]
+        sys.exit(self_test(rest[0] if rest else None))
+    if "--version" in sys.argv:
+        if sys.stdout:
+            print(f"{APP_NAME} {VERSION}")
+        return
+    root = tk.Tk(className=APP_ID)
     NewsReader(root)
     root.mainloop()
 

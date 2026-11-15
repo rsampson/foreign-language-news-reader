@@ -7,19 +7,56 @@ page can be read the same way.
 
 ![The app with a sentence highlighted in both languages, its words coloured by part of speech, and one matching word pair marked](screenshot.png)
 
-## Starting the app
+## Download and install
 
-From the applications menu, search for **French News Reader**.
+Get the file for your computer from the
+[Releases page](../../releases/latest). No Python or other setup is needed.
 
-Or from a terminal, in the folder containing the app:
+- **Windows:** run `french-news-reader-windows-setup.exe`. Windows may say
+  "Windows protected your PC" because the app is not signed with a paid
+  certificate: click **More info**, then **Run anyway**.
+- **Mac:** unzip and drag **French News Reader** into Applications. The first
+  time, macOS will refuse to open it: open **System Settings > Privacy &
+  Security** and click **Open Anyway**. Use the `apple-silicon` file for Macs
+  from 2020 onward, `intel` for older ones.
+- **Linux:** unpack the `.tar.gz` and run `./install.sh` inside it. This adds
+  the app to your menu and a `french-news-reader` command. `./install.sh
+  --uninstall` removes it.
+
+On first launch the app asks you to choose an AI service and paste an API key
+from it. The service bills you for what you use; a day's news typically costs
+a few cents.
+
+## Privacy and security
+
+- Your API key is stored as plain text in the app's settings file on your own
+  computer and is sent only to the AI service you chose.
+- The news text, and the text of any web page you load, is sent to that AI
+  service. Web pages are fetched directly from your computer.
+- The app has no accounts, analytics or telemetry.
+- The downloads are built by GitHub from this repository's source
+  (`.github/workflows/release.yml`). They are not code-signed.
+
+## Run from source
+
+For people comfortable with Python (3.10 or later, with Tkinter):
 
 ```bash
-python3 news_reader.py
+git clone https://github.com/rsampson/french-news-reader.git
+cd french-news-reader
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m piper.download_voices --data-dir voices fr_FR-siwis-medium
+.venv/bin/python news_reader.py
 ```
 
-The first launch of the day fetches and summarises the news, which takes about
-3 minutes with Claude. After that the day's stories are saved, so reopening is
-instant.
+On Windows use `.venv\Scripts\python` in place of `.venv/bin/python`. The
+packages are optional: without them the app still runs with plain `python3
+news_reader.py`, minus the French voice and the Claude API-key option.
+`python news_reader.py --self-test` checks that everything is in place.
+
+The first launch of the day fetches and summarises the news, which takes a few
+minutes. After that the day's stories are saved, so reopening is instant.
 
 ## Reading
 
@@ -96,15 +133,9 @@ user account.
 | `.venv/` | Piper, the program that produces the French voice. |
 | `voices/` | The French voice model (`fr_FR-siwis-medium`, about 63 MB). |
 
-The app itself needs only Python 3 with Tkinter. If `.venv/` or `voices/` is
-missing, speech falls back to the system's robotic `spd-say` voice. To restore
-the natural voice, run these in the app folder:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install piper-tts
-.venv/bin/python -m piper.download_voices --data-dir voices fr_FR-siwis-medium
-```
+In the downloaded app, settings and the cache live in your user data folder
+instead (`%APPDATA%\\french-news-reader`, `~/Library/Application
+Support/french-news-reader` or `~/.local/share/french-news-reader`).
 
 ## Changing things
 
@@ -117,3 +148,11 @@ The constants at the top of `news_reader.py` control:
 - `PIPER_VOICE` and `PIPER_LENGTH_SCALE`: the voice and its speed (above 1 is
   slower).
 - `PARTS_OF_SPEECH`: the colours and labels in the key.
+
+## Licence and credits
+
+French News Reader is free software under the [GNU GPL v3](LICENSE), with no
+warranty. The downloadable apps include [Piper](https://github.com/OHF-voice/piper1-gpl)
+(GPL-3.0) and the `fr_FR-siwis-medium` voice, trained on the SIWIS French
+speech dataset (CC BY 4.0). News summaries are generated from Le Monde's
+public RSS feed; this project is not affiliated with Le Monde.

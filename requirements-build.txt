@@ -1,0 +1,3 @@
+# Needed to build the downloadable apps (used by .github/workflows/release.yml).
+-r requirements.txt
+pyinstaller==6.22.3

@@ -1,0 +1,123 @@
+# Builds the downloadable French News Reader apps for Linux, Windows and macOS.
+#
+# - Run by hand (Actions tab > Build apps > Run workflow): builds and tests
+#   the apps and keeps them as workflow artifacts. Nothing is published.
+# - Push a tag such as v1.0.0: also publishes them as a GitHub Release.
+#
+# Only someone with write access to this repository can do either. Pull
+# requests from other people never run this workflow.
+name: Build apps
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, name: linux}
+          - {os: windows-2025, name: windows}
+          - {os: macos-15, name: macos-apple-silicon}
+          - {os: macos-15-intel, name: macos-intel}
+    steps:
+      # Third-party actions are pinned to exact commits, not movable tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Download the French voice and verify its checksum
+        shell: bash
+        run: |
+          python -m piper.download_voices --data-dir voices fr_FR-siwis-medium
+          python - <<'PY'
+          import hashlib, sys
+          expected = "b1d946fd68d0347155fa59bce0a018924abbef3c1561181db45ca463d83963ef"
+          with open("voices/fr_FR-siwis-medium.onnx", "rb") as f:
+              actual = hashlib.sha256(f.read()).hexdigest()
+          if actual != expected:
+              sys.exit(f"Voice model checksum mismatch: {actual}")
+          print("Voice model checksum OK")
+          PY
+
+      - name: Build the app
+        run: pyinstaller packaging/french-news-reader.spec --noconfirm
+
+      - name: Self-test the built app
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS) APP="dist/French News Reader.app/Contents/MacOS/french-news-reader" ;;
+            Windows) APP="dist/french-news-reader/french-news-reader.exe" ;;
+            *) APP="dist/french-news-reader/french-news-reader" ;;
+          esac
+          "$APP" --self-test selftest.txt || { cat selftest.txt; exit 1; }
+          cat selftest.txt
+          grep -q "^PASSED$" selftest.txt
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p pkg/french-news-reader-linux
+          cp -R dist/french-news-reader pkg/french-news-reader-linux/
+          cp packaging/linux/install.sh packaging/icon.png LICENSE pkg/french-news-reader-linux/
+          tar -czf dist/french-news-reader-linux.tar.gz -C pkg french-news-reader-linux
+
+      - name: Package (Windows installer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+            $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          iscc packaging\windows\installer.iss
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/French News Reader.app" "dist/french-news-reader-${{ matrix.name }}.zip"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: french-news-reader-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            dist/french-news-reader-*.tar.gz
+            dist/french-news-reader-*.exe
+            dist/french-news-reader-*.zip
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # only this job may create the release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la out
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "French News Reader $GITHUB_REF_NAME" \
+            --generate-notes

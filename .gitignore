@@ -3,3 +3,5 @@ voices/
 cache/
 settings.json
 __pycache__/
+build/
+dist/

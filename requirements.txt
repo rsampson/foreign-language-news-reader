@@ -1,0 +1,6 @@
+# Needed to run French News Reader from source (see "Run from source" in the
+# README). The app's core needs only Python 3.10+ with Tkinter; these add the
+# French voice and Claude-with-an-API-key.
+piper-tts==1.8.0
+anthropic==2.8.0
+certifi
