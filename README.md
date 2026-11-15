@@ -112,6 +112,43 @@ are billed differently:
 Either way, the day's stories are saved after the first fetch, so the AI is
 used once per day unless you click **Refresh** or load a web page.
 
+## Trying it for free with a local model
+
+If you are curious about the app and not ready to open an account with an AI
+service, you can try it with a model that runs on your own computer through
+[Ollama](https://ollama.com). It costs nothing and nothing leaves your
+computer.
+
+> **Caution: this is for a trial, not for everyday use.** A local model is
+> far slower than an AI service. How long a fetch takes depends entirely on
+> your hardware. On a desktop computer without a graphics card, two stories
+> took about two minutes in testing, so expect ten minutes or more for the
+> day's ten stories, and possibly much longer on a laptop or older machine.
+> The summaries and translations are also less reliable.
+
+1. Install Ollama from [ollama.com](https://ollama.com).
+2. Download a model. Gemma 4 is a reasonable choice; it is a download of
+   about 10 GB and needs a computer with plenty of memory:
+
+   ```bash
+   ollama pull gemma4
+   ```
+
+3. Start the app. On the welcome screen click **Other options…** (or click
+   **Settings** if the app is already set up).
+4. Choose **Ollama (model running on this computer)**. Leave the address as
+   it is and set the model to `gemma4:latest`.
+5. Untick **Word detail**. A local model is unlikely to produce the
+   part-of-speech colours and word-to-word matching reliably, and asking for
+   them makes it slower still. You still get sentence highlighting,
+   translation and speech.
+6. Click **Save and refresh now** and wait. The status line at the top says
+   the app is fetching until it finishes; the **Refresh** button stays greyed
+   out during that time.
+
+When you are ready for everyday use, switch to one of the options under
+[Do I need an API key?](#do-i-need-an-api-key).
+
 ## Choosing the AI (Settings)
 
 Click **Settings** to choose which AI writes the summaries and translations.

@@ -856,6 +856,7 @@ class NewsReader:
         self.status.pack(side="left", fill="x", expand=True)
         self.settings = load_settings()
         self.url = None  # None = the news feed; otherwise a web page address
+        self.busy = False  # True while a fetch is running
 
         # Source row: read any web page instead of the news.
         source = tk.Frame(root, bg=BG)
@@ -961,6 +962,7 @@ class NewsReader:
         self.load()
 
     def _set_busy(self, busy):
+        self.busy = busy
         state = "disabled" if busy else "normal"
         for widget in (self.refresh_btn, self.page_btn, self.url_entry):
             widget.config(state=state)
@@ -1204,7 +1206,14 @@ class NewsReader:
                 **{key: var.get().strip() for key, var in fields.items()}}
             save_settings(self.settings)
             win.destroy()
-            if refresh:
+            if self.busy:
+                # A fetch is already running with the previous settings;
+                # Refresh is disabled until it ends.
+                self.status.config(
+                    text="Settings saved. A fetch is still running with the "
+                         "previous settings; when it finishes, click Refresh "
+                         f"to use {ai_label(self.settings)}.")
+            elif refresh:
                 self.load(force=True)
             else:
                 self.status.config(
