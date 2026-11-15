@@ -42,8 +42,8 @@ a few cents.
 For people comfortable with Python (3.10 or later, with Tkinter):
 
 ```bash
-git clone https://github.com/rsampson/french-news-reader.git
-cd french-news-reader
+git clone https://github.com/rsampson/foreign-language-news-reader.git
+cd foreign-language-news-reader
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m piper.download_voices --data-dir voices fr_FR-siwis-medium
