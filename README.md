@@ -67,6 +67,7 @@ minutes. After that the day's stories are saved, so reopening is instant.
 | Look at the highlighted sentence | Each word is coloured by its part of speech. The key at the bottom of the window explains the colours. |
 | Move the mouse over a word | The word and the word or words that translate it turn into dark boxes. A word with no counterpart highlights on its own side only. |
 | Click the red ► before a French sentence | The sentence is read aloud in French. Clicking another ► interrupts it. |
+| Choose a **Speech speed** | Sets how fast sentences are read aloud: Normal, Slow (the default), Slower or Very slow. The choice is remembered. |
 | Click **Refresh** | The news, or the web page on screen, is fetched again, replacing today's saved copy. |
 
 Everything works from either panel: you can hover the English to find the
@@ -206,8 +207,8 @@ The constants at the top of `news_reader.py` control:
 - `ITEM_COUNT`: how many stories to show, and the most sections made from a
   web page.
 - `MAX_PAGE_CHARS`: how much of a web page's text is given to the AI.
-- `PIPER_VOICE` and `PIPER_LENGTH_SCALE`: the voice and its speed (above 1 is
-  slower).
+- `PIPER_VOICE` and `SPEECH_SPEEDS`: the voice, and the speeds offered in the
+  **Speech speed** box.
 - `PARTS_OF_SPEECH`: the colours and labels in the key.
 
 ## Licence and credits

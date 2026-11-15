@@ -86,6 +86,11 @@ try:  # the packaged app carries its own certificate list for HTTPS
 except ImportError:
     SSL_CONTEXT = None  # use the system's certificates
 
+# Speech speeds offered in the window: name -> how much each sound is
+# stretched (1.0 is the voice's natural pace; larger is slower).
+SPEECH_SPEEDS = {"Normal": 1.0, "Slow": 1.15, "Slower": 1.45, "Very slow": 1.9}
+DEFAULT_SPEECH_SPEED = "Slow"
+
 # Which AI writes the summaries. Changed from the Settings button and saved
 # in settings.json. "openai" is any service speaking the OpenAI chat API
 # (OpenAI, Mistral, Groq, OpenRouter, Gemini's compatible endpoint, ...).
@@ -119,6 +124,7 @@ DEFAULT_SETTINGS = {
     # Word detail = parts of speech and word-to-word matching. It needs a
     # strong model; turn it off for an AI that cannot produce it reliably.
     "word_detail": True,
+    "speech_speed": DEFAULT_SPEECH_SPEED,
     "anthropic_model": "claude-opus-5-5",
     "anthropic_key": "",
     "claude_model": "sonnet",
@@ -132,7 +138,6 @@ DEFAULT_SETTINGS = {
 # `pip install piper-tts` and the voice model in voices/ (see the README).
 PIPER_VOICE = "fr_FR-siwis-medium"
 VOICE_DIRS = [RESOURCE_DIR / "voices", DATA_DIR / "voices"]
-PIPER_LENGTH_SCALE = 1.15  # above 1 is slower; a little slow for learners
 if sys.platform == "darwin":
     PLAYER = shutil.which("afplay")
 elif sys.platform == "win32":
@@ -140,7 +145,6 @@ elif sys.platform == "win32":
 else:
     PLAYER = (shutil.which("pw-play") or shutil.which("paplay")
               or shutil.which("aplay"))
-SPD_SAY_RATE = -20  # Linux fallback voice: -100 (slowest) to 100
 _speech_dir = None
 
 
@@ -721,7 +725,7 @@ def speech_available():
     return bool(piper_available() or shutil.which("spd-say"))
 
 
-def synthesise(sentence, wav_path):
+def synthesise(sentence, wav_path, stretch=SPEECH_SPEEDS[DEFAULT_SPEECH_SPEED]):
     """Write the sentence, spoken by the Piper voice, to a WAV file."""
     global _voice
     from piper import PiperVoice, SynthesisConfig
@@ -730,7 +734,7 @@ def synthesise(sentence, wav_path):
     with wave.open(str(wav_path), "wb") as wav_file:
         _voice.synthesize_wav(
             sentence, wav_file,
-            syn_config=SynthesisConfig(length_scale=PIPER_LENGTH_SCALE))
+            syn_config=SynthesisConfig(length_scale=stretch))
 
 
 def _stop_playback():
@@ -741,11 +745,13 @@ def _stop_playback():
         _player_proc.kill()
 
 
-def speak_french(sentence):
+def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED):
     """Read a sentence aloud in French, replacing anything still playing.
 
-    Uses the Piper neural voice when it is installed, otherwise spd-say.
+    speed is a name from SPEECH_SPEEDS. Uses the Piper neural voice when it
+    is installed, otherwise spd-say.
     """
+    stretch = SPEECH_SPEEDS.get(speed, SPEECH_SPEEDS[DEFAULT_SPEECH_SPEED])
     global _speech_turn
     with _speech_lock:
         _speech_turn += 1
@@ -756,14 +762,16 @@ def speak_french(sentence):
         global _player_proc
         if not piper_available():
             subprocess.run(["spd-say", "-C"], capture_output=True)
-            subprocess.run(["spd-say", "-l", "fr", "-r", str(SPD_SAY_RATE),
+            # spd-say rates run from -100 (slowest) to 100; 0 is normal.
+            rate = max(-100, round((1 - stretch) * 110))
+            subprocess.run(["spd-say", "-l", "fr", "-r", str(rate),
                             "--", sentence], capture_output=True)
             return
         with _synth_lock:
             if turn != _speech_turn:
                 return  # a newer sentence was requested meanwhile
             wav = speech_file()
-            synthesise(sentence, wav)
+            synthesise(sentence, wav, stretch)
             with _speech_lock:
                 if turn != _speech_turn:
                     return
@@ -863,6 +871,16 @@ class NewsReader:
         source.pack(fill="x", padx=16, pady=(6, 0))
         tk.Label(source, text="Web page:", bg=BG, fg=MUTED,
                  font=self.label_font).pack(side="left")
+        # Speech speed, at the far right of the row.
+        self.speed = tk.StringVar(value=self.settings["speech_speed"]
+                                  if self.settings["speech_speed"]
+                                  in SPEECH_SPEEDS else DEFAULT_SPEECH_SPEED)
+        speed_box = ttk.Combobox(source, textvariable=self.speed, width=9,
+                                 state="readonly", values=list(SPEECH_SPEEDS))
+        speed_box.pack(side="right")
+        speed_box.bind("<<ComboboxSelected>>", self.on_speed_change)
+        tk.Label(source, text="Speech speed:", bg=BG, fg=MUTED,
+                 font=self.label_font).pack(side="right", padx=(16, 6))
         self.news_btn = tk.Button(source, text=f"Back to {FEED_NAME} news",
                                   relief="flat", command=self.show_news)
         self.news_btn.pack(side="right")
@@ -872,6 +890,7 @@ class NewsReader:
         self.url_entry = tk.Entry(source, font=self.key_font)
         self.url_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
         self.url_entry.bind("<Return>", lambda e: self.show_page())
+        self._enable_editing(root)
 
         self._make_key(root)  # packed at the bottom before the panes expand
 
@@ -894,6 +913,75 @@ class NewsReader:
         else:  # first launch: nothing can load until an AI is chosen
             self.status.config(text="Choose an AI service to begin.")
             root.after(200, self.open_welcome)
+
+    def _enable_editing(self, root):
+        """Cut, copy and paste for every text box, by keyboard and mouse.
+
+        Tk's defaults are thin: no right-click menu, no Ctrl+A, and on Linux
+        a paste does not replace the selected text. This adds all three to
+        the web page box and the boxes in the Settings and welcome screens.
+        """
+        menu = tk.Menu(root, tearoff=False)
+        target = {}  # the box the menu was opened on
+        for label, action in (("Cut", "<<Cut>>"), ("Copy", "<<Copy>>"),
+                              ("Paste", "<<Paste>>")):
+            menu.add_command(
+                label=label,
+                command=lambda a=action: target["box"].event_generate(a))
+        menu.add_separator()
+        menu.add_command(label="Select all",
+                         command=lambda: select_all(target["box"]))
+
+        def select_all(box):
+            box.select_range(0, "end")
+            box.icursor("end")
+
+        def popup(event):
+            box = target["box"] = event.widget
+            box.focus_set()
+            editable = str(box.cget("state")) == "normal"
+            selected = box.selection_present()
+            hidden = bool(box.cget("show"))  # an API key box
+            try:
+                has_text = bool(box.clipboard_get())
+            except tk.TclError:
+                has_text = False
+            # A masked key cannot be cut or copied out, only replaced.
+            menu.entryconfig("Cut", state="normal" if editable and selected
+                             and not hidden else "disabled")
+            menu.entryconfig("Copy", state="normal" if selected
+                             and not hidden else "disabled")
+            menu.entryconfig("Paste", state="normal" if editable
+                             and has_text else "disabled")
+            menu.tk_popup(event.x_root, event.y_root)
+
+        def paste(event):
+            box = event.widget
+            try:
+                text = box.clipboard_get()
+            except tk.TclError:
+                return "break"  # the clipboard is empty or not text
+            if box.selection_present():
+                box.delete("sel.first", "sel.last")
+            # Addresses and keys are single lines: drop stray line breaks.
+            box.insert("insert", "".join(text.splitlines()).strip())
+            return "break"
+
+        def on_select_all(event):
+            select_all(event.widget)
+            return "break"
+
+        right_clicks = ["<Button-3>"]
+        if sys.platform == "darwin":
+            right_clicks = ["<Button-2>", "<Control-Button-1>"]
+        for widget_class in ("Entry", "TCombobox"):
+            for sequence in right_clicks:
+                root.bind_class(widget_class, sequence, popup)
+            root.bind_class(widget_class, "<<Paste>>", paste)
+            root.bind_class(widget_class, "<Control-a>", on_select_all)
+            root.bind_class(widget_class, "<Control-A>", on_select_all)
+            if sys.platform == "darwin":
+                root.bind_class(widget_class, "<Command-a>", on_select_all)
 
     def _make_key(self, root):
         """Legend explaining the part-of-speech colours."""
@@ -951,6 +1039,8 @@ class NewsReader:
 
     def show_page(self):
         """Switch to the web page whose address is in the entry box."""
+        if self.busy:
+            return  # pressed Enter during a fetch; the button is disabled
         try:
             url = normalise_url(self.url_entry.get())
         except RuntimeError as exc:
@@ -964,7 +1054,9 @@ class NewsReader:
     def _set_busy(self, busy):
         self.busy = busy
         state = "disabled" if busy else "normal"
-        for widget in (self.refresh_btn, self.page_btn, self.url_entry):
+        # The address box stays usable so an address can be pasted and edited
+        # while a fetch is running.
+        for widget in (self.refresh_btn, self.page_btn):
             widget.config(state=state)
         # "Back to news" is only useful while a web page is the source.
         self.news_btn.config(
@@ -1202,6 +1294,7 @@ class NewsReader:
                 note.config(text="Choose one of the AI options first.")
                 return
             self.settings = {
+                **self.settings,
                 "provider": provider.get(), "word_detail": detail.get(),
                 **{key: var.get().strip() for key, var in fields.items()}}
             save_settings(self.settings)
@@ -1294,12 +1387,19 @@ class NewsReader:
         self.set_active(tag, source=text)
         self.set_active_word(text, tag, number)
 
+    def on_speed_change(self, event=None):
+        """Remember the chosen speech speed for next time."""
+        event.widget.selection_clear()
+        self.settings["speech_speed"] = self.speed.get()
+        if self.settings["provider"]:  # nothing to save before first setup
+            save_settings(self.settings)
+
     def on_speak(self, text, event):
         """Speak the French sentence whose play button was clicked."""
         for tag in text.tag_names(f"@{event.x},{event.y}"):
             if tag in self.french:
                 if speech_available():
-                    speak_french(self.french[tag])
+                    speak_french(self.french[tag], self.speed.get())
                 else:
                     self.status.config(
                         text="Cannot speak: the French voice is not installed "
