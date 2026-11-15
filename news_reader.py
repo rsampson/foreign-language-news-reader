@@ -17,6 +17,7 @@ address into the "Web page" box.
 The app itself needs only the standard library. Run:  python3 news_reader.py
 """
 
+import atexit
 import datetime
 import hashlib
 import html.parser
@@ -140,7 +141,21 @@ else:
     PLAYER = (shutil.which("pw-play") or shutil.which("paplay")
               or shutil.which("aplay"))
 SPD_SAY_RATE = -20  # Linux fallback voice: -100 (slowest) to 100
-SPEECH_WAV = Path(tempfile.gettempdir()) / f"{APP_ID}-speech-{os.getpid()}.wav"
+_speech_dir = None
+
+
+def speech_file(name="speech.wav"):
+    """Path for a temporary audio file, in a folder only this user can use.
+
+    A fixed name in the shared temp folder could be hijacked by another user
+    of the same computer, so a private folder is made on first use and
+    removed when the app closes.
+    """
+    global _speech_dir
+    if _speech_dir is None:
+        _speech_dir = tempfile.mkdtemp(prefix=APP_ID + "-")
+        atexit.register(shutil.rmtree, _speech_dir, ignore_errors=True)
+    return Path(_speech_dir) / name
 SPEAK_GLYPH = "\u25ba"  # the small play button in front of each French sentence
 CACHE_DIR = DATA_DIR / "cache"
 
@@ -444,16 +459,40 @@ def ask_claude(prompt, settings):
     return proc.stdout
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects, which would carry the API key to another address."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, "the service tried to redirect the request",
+            headers, fp)
+
+
+def _api_opener():
+    return urllib.request.build_opener(
+        _NoRedirect, urllib.request.HTTPSHandler(context=SSL_CONTEXT))
+
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
 def post_json(url, payload, headers=None, timeout=AI_TIMEOUT_S):
     """Send JSON (POST), or fetch (GET when payload is None); return JSON."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise RuntimeError(f"{url} is not a web address.")
+    if (headers and "Authorization" in headers and parts.scheme != "https"
+            and parts.hostname not in LOCAL_HOSTS):
+        raise RuntimeError(
+            "Refusing to send the API key over an unencrypted connection. "
+            "The service address must start with https://")
     req = urllib.request.Request(
         url, data=None if payload is None else json.dumps(payload).encode("utf-8"),
         # Some services turn away urllib's default User-Agent.
         headers={"Content-Type": "application/json",
                  "User-Agent": f"{APP_ID}/{VERSION}", **(headers or {})})
     try:
-        with urllib.request.urlopen(
-                req, timeout=timeout, context=SSL_CONTEXT) as resp:
+        with _api_opener().open(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -723,18 +762,19 @@ def speak_french(sentence):
         with _synth_lock:
             if turn != _speech_turn:
                 return  # a newer sentence was requested meanwhile
-            synthesise(sentence, SPEECH_WAV)
+            wav = speech_file()
+            synthesise(sentence, wav)
             with _speech_lock:
                 if turn != _speech_turn:
                     return
                 if sys.platform == "win32":
                     import winsound
                     winsound.PlaySound(
-                        str(SPEECH_WAV),
+                        str(wav),
                         winsound.SND_FILENAME | winsound.SND_ASYNC)
                 else:
                     _player_proc = subprocess.Popen(
-                        [PLAYER, str(SPEECH_WAV)],
+                        [PLAYER, str(wav)],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     threading.Thread(target=run, daemon=True).start()
@@ -1335,7 +1375,7 @@ def self_test(report_path=None):
         assert title == "T" and "mot" in text and "pub" not in text
 
     def voice():
-        target = Path(tempfile.gettempdir()) / f"{APP_ID}-selftest.wav"
+        target = speech_file("selftest.wav")
         synthesise("Bonjour, ceci est un essai.", target)
         with wave.open(str(target)) as audio:
             seconds = audio.getnframes() / audio.getframerate()
