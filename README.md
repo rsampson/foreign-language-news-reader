@@ -95,12 +95,15 @@ the **Web page** box and press Enter or click **Read this page**. Click
 
 Click **Settings** to choose which AI writes the summaries and translations.
 
-- **Claude** (default) uses the `claude` command-line tool and your Claude
-  subscription. Best quality; supports every feature.
-- **Ollama** uses a model running on this computer. Free and offline, but slow
-  without a graphics card (around 10 minutes for ten stories with `gemma4`).
-- **OpenAI-compatible service** covers OpenAI, Mistral, Groq, OpenRouter and
-  others. Enter the service's address, a model name and your API key.
+- **Claude, with an Anthropic API key.** Paste a key from
+  platform.claude.com. Uses Claude Opus by default; supports every feature.
+- **OpenAI-compatible service, with an API key.** Covers OpenAI, Google
+  Gemini, Mistral, Groq, OpenRouter and others. Enter the service's address
+  and your key, click **List models** and pick one.
+- **Ollama** uses a model running on your own computer. Free and offline, but
+  slow without a graphics card (around 10 minutes for ten stories).
+- **Claude Code command-line tool**, for people who have it installed. It uses
+  a Claude subscription instead of an API key.
 
 **Word detail** controls the part-of-speech colours and word-to-word matching.
 Turn it off for an AI that is too slow or unreliable to produce them. If an AI
@@ -111,7 +114,7 @@ their own; sentence highlighting, translation and speech keep working.
 waits until you next click Refresh. The status bar at the top shows which AI
 wrote the stories on screen.
 
-The API key is stored in plain text in `settings.json`, readable only by your
+API keys are stored in plain text in the settings file, readable only by your
 user account.
 
 ## Things to know
@@ -134,7 +137,7 @@ user account.
 | `voices/` | The French voice model (`fr_FR-siwis-medium`, about 63 MB). |
 
 In the downloaded app, settings and the cache live in your user data folder
-instead (`%APPDATA%\\french-news-reader`, `~/Library/Application
+instead (`%APPDATA%\french-news-reader`, `~/Library/Application
 Support/french-news-reader` or `~/.local/share/french-news-reader`).
 
 ## Changing things
