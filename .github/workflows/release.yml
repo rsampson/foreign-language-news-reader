@@ -1,4 +1,4 @@
-# Builds the downloadable French News Reader apps for Linux, Windows and macOS.
+# Builds the downloadable Foreign Language News Reader apps for Linux, Windows and macOS.
 #
 # - Run by hand (Actions tab > Build apps > Run workflow): builds and tests
 #   the apps and keeps them as workflow artifacts. Nothing is published.
@@ -55,15 +55,15 @@ jobs:
           PY
 
       - name: Build the app
-        run: pyinstaller packaging/french-news-reader.spec --noconfirm
+        run: pyinstaller packaging/foreign-language-news-reader.spec --noconfirm
 
       - name: Self-test the built app
         shell: bash
         run: |
           case "$RUNNER_OS" in
-            macOS) APP="dist/French News Reader.app/Contents/MacOS/french-news-reader" ;;
-            Windows) APP="dist/french-news-reader/french-news-reader.exe" ;;
-            *) APP="dist/french-news-reader/french-news-reader" ;;
+            macOS) APP="dist/Foreign Language News Reader.app/Contents/MacOS/foreign-language-news-reader" ;;
+            Windows) APP="dist/foreign-language-news-reader/foreign-language-news-reader.exe" ;;
+            *) APP="dist/foreign-language-news-reader/foreign-language-news-reader" ;;
           esac
           "$APP" --self-test selftest.txt || { cat selftest.txt; exit 1; }
           cat selftest.txt
@@ -72,10 +72,10 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          mkdir -p pkg/french-news-reader-linux
-          cp -R dist/french-news-reader pkg/french-news-reader-linux/
-          cp packaging/linux/install.sh packaging/icon.png LICENSE pkg/french-news-reader-linux/
-          tar -czf dist/french-news-reader-linux.tar.gz -C pkg french-news-reader-linux
+          mkdir -p pkg/foreign-language-news-reader-linux
+          cp -R dist/foreign-language-news-reader pkg/foreign-language-news-reader-linux/
+          cp packaging/linux/install.sh packaging/icon.png LICENSE pkg/foreign-language-news-reader-linux/
+          tar -czf dist/foreign-language-news-reader-linux.tar.gz -C pkg foreign-language-news-reader-linux
 
       - name: Package (Windows installer)
         if: runner.os == 'Windows'
@@ -89,16 +89,16 @@ jobs:
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/French News Reader.app" "dist/french-news-reader-${{ matrix.name }}.zip"
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/Foreign Language News Reader.app" "dist/foreign-language-news-reader-${{ matrix.name }}.zip"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: french-news-reader-${{ matrix.name }}
+          name: foreign-language-news-reader-${{ matrix.name }}
           if-no-files-found: error
           path: |
-            dist/french-news-reader-*.tar.gz
-            dist/french-news-reader-*.exe
-            dist/french-news-reader-*.zip
+            dist/foreign-language-news-reader-*.tar.gz
+            dist/foreign-language-news-reader-*.exe
+            dist/foreign-language-news-reader-*.zip
 
   release:
     name: Publish release
@@ -119,5 +119,5 @@ jobs:
           ls -la out
           gh release create "$GITHUB_REF_NAME" out/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "French News Reader $GITHUB_REF_NAME" \
+            --title "Foreign Language News Reader $GITHUB_REF_NAME" \
             --generate-notes

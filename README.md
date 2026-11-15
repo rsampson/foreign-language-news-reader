@@ -1,6 +1,7 @@
-# French News Reader
+# Foreign Language News Reader
 
-Learn French by reading the day's news. The app shows the top 10 stories from
+Learn a language by reading the day's news. French is the only language so
+far; the name leaves room for more. The app shows the top 10 stories from
 Le Monde as short summaries, French on the left and English on the right, and
 links the two languages sentence by sentence and word by word. Any other web
 page can be read the same way.
@@ -12,15 +13,15 @@ page can be read the same way.
 Get the file for your computer from the
 [Releases page](../../releases/latest). No Python or other setup is needed.
 
-- **Windows:** run `french-news-reader-windows-setup.exe`. Windows may say
+- **Windows:** run `foreign-language-news-reader-windows-setup.exe`. Windows may say
   "Windows protected your PC" because the app is not signed with a paid
   certificate: click **More info**, then **Run anyway**.
-- **Mac:** unzip and drag **French News Reader** into Applications. The first
+- **Mac:** unzip and drag **Foreign Language News Reader** into Applications. The first
   time, macOS will refuse to open it: open **System Settings > Privacy &
   Security** and click **Open Anyway**. Use the `apple-silicon` file for Macs
   from 2020 onward, `intel` for older ones.
 - **Linux:** unpack the `.tar.gz` and run `./install.sh` inside it. This adds
-  the app to your menu and a `french-news-reader` command. `./install.sh
+  the app to your menu and a `foreign-language-news-reader` command. `./install.sh
   --uninstall` removes it.
 
 On first launch the app asks you to choose an AI service and paste an API key
@@ -137,8 +138,8 @@ user account.
 | `voices/` | The French voice model (`fr_FR-siwis-medium`, about 63 MB). |
 
 In the downloaded app, settings and the cache live in your user data folder
-instead (`%APPDATA%\french-news-reader`, `~/Library/Application
-Support/french-news-reader` or `~/.local/share/french-news-reader`).
+instead (`%APPDATA%\foreign-language-news-reader`, `~/Library/Application
+Support/foreign-language-news-reader` or `~/.local/share/foreign-language-news-reader`).
 
 ## Changing things
 
@@ -154,7 +155,7 @@ The constants at the top of `news_reader.py` control:
 
 ## Licence and credits
 
-French News Reader is free software under the [GNU GPL v3](LICENSE), with no
+Foreign Language News Reader is free software under the [GNU GPL v3](LICENSE), with no
 warranty. The downloadable apps include [Piper](https://github.com/OHF-voice/piper1-gpl)
 (GPL-3.0) and the `fr_FR-siwis-medium` voice, trained on the SIWIS French
 speech dataset (CC BY 4.0). News summaries are generated from Le Monde's

@@ -50,9 +50,9 @@ MAX_PAGE_CHARS = 12_000     # how much of its text to give the AI
 MIN_LINE_CHARS = 30         # shorter lines of a page are treated as clutter
 AI_TIMEOUT_S = 1800  # local models on a CPU can be slow
 
-APP_NAME = "French News Reader"
-APP_ID = "french-news-reader"
-VERSION = "1.0.0"
+APP_NAME = "Foreign Language News Reader"
+APP_ID = "foreign-language-news-reader"
+VERSION = "1.1.0"
 FROZEN = getattr(sys, "frozen", False)  # True inside the packaged app
 APP_DIR = Path(__file__).resolve().parent
 # Read-only files shipped with the app (voice model, icon).
