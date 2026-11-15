@@ -45,6 +45,11 @@ the **Web page** box and press Enter or click **Read this page**. Click
   translation.
 - It is a summary, not the whole page: only the first 12,000 characters of the
   page's readable text are used, so long pages are covered from the top.
+- Clutter is filtered out before the AI sees the page: menus, headers and
+  footers, and anything the page labels as an advert, sponsored content, a
+  cookie notice, a newsletter sign-up, a pop-up or a "related stories" box.
+  Scripts are never run, so adverts inserted by scripts never load at all.
+  Promotional text written as ordinary paragraphs can still slip through.
 - Pages that need a login, or that build their content with JavaScript, give a
   "No readable text found" message. PDFs and other files are not supported.
 - Each page is saved for the day, so loading the same address again is instant.

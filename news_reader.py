@@ -179,6 +179,18 @@ def fetch_feed():
     return items
 
 
+# Words in an element's class or id that mark it as clutter rather than
+# content: adverts, cookie and consent notices, newsletter sign-ups, pop-ups
+# and "related stories" boxes. Matched as whole words between - and _, so
+# "ad-slot" and "top_ad" match but "header", "shadow" and "download" do not.
+CLUTTER_NAME = re.compile(
+    r"(?:^|[-_])(?:ads?|advert(?:s|isement|ising)?|sponsor(?:s|ed)?|promo(?:s|tion)?"
+    r"|cookies?|consent|gdpr|newsletter|subscribe|popup|modal|related"
+    r"|recommended|outbrain|taboola)(?:[-_]|$)", re.IGNORECASE)
+CLUTTER_ROLES = {"dialog", "alertdialog", "complementary", "navigation",
+                 "search", "banner", "contentinfo"}
+
+
 class _PageText(html.parser.HTMLParser):
     """Collect the readable text of an HTML page, one block per line."""
 
@@ -188,31 +200,57 @@ class _PageText(html.parser.HTMLParser):
              "article", "main", "figcaption", "dd", "dt", "pre",
              "h1", "h2", "h3", "h4", "h5", "h6"}
     MAIN = {"article", "main"}
+    # Tags with no closing tag, and tags never judged by their names.
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr"}
+    NEVER_CLUTTER = {"html", "body", "main", "article"}
 
-    def __init__(self):
+    def __init__(self, filter_clutter=True):
         super().__init__()
+        self.filter_clutter = filter_clutter
+        self.open = []  # (tag, counts as skipped, counts as main) per open tag
         self.skip = self.main = 0
         self.in_title = False
         self.title = ""
         self.everything, self.main_only = [], []
 
+    def _is_clutter(self, tag, attrs):
+        """True for an element that is hidden or named like an advert etc."""
+        if not self.filter_clutter or tag in self.NEVER_CLUTTER:
+            return False
+        attrs = {name: value or "" for name, value in attrs}
+        if "hidden" in attrs or attrs.get("aria-hidden") == "true" \
+                or attrs.get("aria-modal") == "true" \
+                or attrs.get("role", "").lower() in CLUTTER_ROLES \
+                or re.search(r"display\s*:\s*none", attrs.get("style", "")):
+            return True
+        names = (attrs.get("class", "") + " " + attrs.get("id", "")).split()
+        return any(CLUTTER_NAME.search(name) for name in names)
+
     def handle_starttag(self, tag, attrs):
-        if tag in self.SKIP:
-            self.skip += 1
-        elif tag in self.MAIN:
-            self.main += 1
-        elif tag == "title" and not self.title and not self.skip:
+        if tag == "title" and not self.title and not self.skip:
             self.in_title = True  # the page's own title, not one inside an image
         if tag in self.BLOCK:
             self._add("\n")
+        if tag in self.VOID:
+            return
+        skipped = tag in self.SKIP or self._is_clutter(tag, attrs)
+        is_main = tag in self.MAIN
+        self.skip += skipped
+        self.main += is_main
+        self.open.append((tag, skipped, is_main))
 
     def handle_endtag(self, tag):
-        if tag in self.SKIP:
-            self.skip = max(0, self.skip - 1)
-        elif tag in self.MAIN:
-            self.main = max(0, self.main - 1)
-        elif tag == "title":
+        if tag == "title":
             self.in_title = False
+        # Close this tag and any tags left open inside it (<p>, <li>, ...).
+        if any(entry[0] == tag for entry in self.open):
+            while self.open:
+                closed, skipped, is_main = self.open.pop()
+                self.skip -= skipped
+                self.main -= is_main
+                if closed == tag:
+                    break
         if tag in self.BLOCK:
             self._add("\n")
 
@@ -276,6 +314,12 @@ def fetch_page(url):
         parser = _PageText()
         parser.feed(body)
         title, text = parser.result()
+        if len(text) < 500:
+            # The clutter filter may have removed real content on an
+            # unusually built page; fall back to the unfiltered text.
+            parser = _PageText(filter_clutter=False)
+            parser.feed(body)
+            title, text = parser.result()
     if len(text) < 200:
         raise RuntimeError(
             "No readable text found on that page. It may need a login or "
