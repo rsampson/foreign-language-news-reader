@@ -8,7 +8,7 @@ links the two languages sentence by sentence and word by word.
 
 From the applications menu, search for **French News Reader**.
 
-Or from a terminal:
+Or from a terminal, in the folder containing the app:
 
 ```bash
 python3 news_reader.py
@@ -75,10 +75,9 @@ user account.
 
 The app itself needs only Python 3 with Tkinter. If `.venv/` or `voices/` is
 missing, speech falls back to the system's robotic `spd-say` voice. To restore
-the natural voice:
+the natural voice, run these in the app folder:
 
 ```bash
-cd french-news
 python3 -m venv .venv
 .venv/bin/pip install piper-tts
 .venv/bin/python -m piper.download_voices --data-dir voices fr_FR-siwis-medium
