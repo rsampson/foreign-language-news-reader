@@ -67,6 +67,7 @@ minutes. After that the day's stories are saved, so reopening is instant.
 | Look at the highlighted sentence | Each word is coloured by its part of speech. The key at the bottom of the window explains the colours. |
 | Move the mouse over a word | The word and the word or words that translate it turn into dark boxes. A word with no counterpart highlights on its own side only. |
 | Click the red ► before a French sentence | The sentence is read aloud in French. Clicking another ► interrupts it. |
+| Listen to a sentence | Each word is highlighted in orange and underlined as it is spoken, together with its translation in the other panel. The timing is estimated from the recording, so it can be a syllable early or late. |
 | Choose a **Speech speed** | Sets how fast sentences are read aloud: Normal, Slow (the default), Slower or Very slow. The choice is remembered. |
 | Click **Refresh** | The news, or the web page on screen, is fetched again, replacing today's saved copy. |
 

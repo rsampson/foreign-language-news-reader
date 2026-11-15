@@ -17,6 +17,7 @@ address into the "Web page" box.
 The app itself needs only the standard library. Run:  python3 news_reader.py
 """
 
+import array
 import atexit
 import datetime
 import hashlib
@@ -31,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.ttk as ttk
@@ -167,6 +169,7 @@ BG = "#fbf9f4"
 FG = "#22201c"
 MUTED = "#8a8478"
 SPEAK_COLOUR = "#b0462f"
+SPOKEN_COLOUR = "#ff9d2e"  # behind the word being read aloud
 HIGHLIGHT = "#efe9da"  # band behind the whole hovered sentence
 
 # Part-of-speech tag -> (key label, background colour for the word).
@@ -745,11 +748,109 @@ def _stop_playback():
         _player_proc.kill()
 
 
-def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED):
+# Marks that espeak emits around sounds; they take no time to say.
+SILENT_PHONEMES = set(" -\u02c8\u02cc.,;:!?\u2026\u00ab\u00bb\"'()")
+PLAYER_LATENCY_S = 0.12  # rough delay before the audio player is heard
+
+
+def _speech_and_silences(wav_path):
+    """Find where speech starts and ends in a WAV file, and the quiet gaps.
+
+    Returns (speech_start_s, speech_end_s, [(gap_start_s, gap_end_s), ...]).
+    """
+    with wave.open(str(wav_path)) as audio:
+        rate = audio.getframerate()
+        samples = array.array("h", audio.readframes(audio.getnframes()))
+    step = max(1, rate // 100)  # look at the sound 10 ms at a time
+    loud = [max(samples[i:i + step], key=abs, default=0) for i in
+            range(0, len(samples), step)]
+    loud = [abs(value) > 650 for value in loud]  # about 2% of full volume
+    if True not in loud:
+        return 0.0, len(samples) / rate, []
+    first = loud.index(True)
+    last = len(loud) - 1 - loud[::-1].index(True)
+    gaps, opened = [], None
+    for number in range(first, last + 1):
+        if not loud[number] and opened is None:
+            opened = number
+        elif loud[number] and opened is not None:
+            gaps.append((opened / 100, number / 100))
+            opened = None
+    return first / 100, (last + 1) / 100, gaps
+
+
+def word_timings(sentence, wav_path):
+    """Estimate when each word of a spoken sentence is heard.
+
+    Returns [(start_s, end_s, char_start, char_end), ...], one entry per
+    whitespace-separated word. The voice model does not report real timings,
+    so they are worked out from the recording: the pauses the voice makes at
+    punctuation are found in the audio and used as fixed points, and between
+    two pauses the time is shared out by each word's number of sounds. It is
+    an estimate, usually within a syllable or so.
+    """
+    start, end, gaps = _speech_and_silences(wav_path)
+    # Split the sentence into phrases at punctuation, where the voice pauses.
+    phrases, phrase = [], []
+    for match in re.finditer(r"\S+", sentence):
+        token = match.group()
+        try:
+            sounds = sum(1 for group in _voice.phonemize(token)
+                         for sound in group if sound not in SILENT_PHONEMES)
+        except Exception:
+            sounds = sum(ch.isalnum() for ch in token)
+        if sounds:  # a lone punctuation mark is not spoken
+            phrase.append((sounds, match.start(), match.end()))
+        if token[-1] in ",;:.!?\u2026" and phrase:
+            phrases.append(phrase)
+            phrase = []
+    if phrase:
+        phrases.append(phrase)
+    if not phrases:
+        return []
+    # Walk through the phrases, fixing the pause after each one to a real
+    # quiet gap in the audio: the gap that is both long and close to where
+    # the pause is expected. Slow speech has quiet moments inside words too,
+    # so the longest gap alone is not a safe choice.
+    pause_sounds = 3  # a pause lasts about as long as three sounds
+    timings, clock = [], start
+    for number, words in enumerate(phrases):
+        size = sum(word[0] for word in words)
+        later = phrases[number + 1:]
+        if later:
+            rest = (size + sum(w[0] for part in later for w in part)
+                    + pause_sounds * len(later))
+            per_sound = (end - clock) / rest
+            expected = clock + size * per_sound
+            reach = max(0.6, 0.25 * (end - clock))
+            nearby = [gap for gap in gaps
+                      if gap[1] - gap[0] >= 0.10 and gap[0] > clock + 0.05
+                      and abs(gap[0] - expected) <= reach]
+            if nearby:
+                phrase_end, resume = max(
+                    nearby, key=lambda gap: (gap[1] - gap[0])
+                    - 0.6 * abs(gap[0] - expected))
+            else:  # no clear gap: fall back to the estimate
+                phrase_end = expected
+                resume = expected + pause_sounds * per_sound
+        else:
+            phrase_end = resume = end
+        per_sound = (phrase_end - clock) / size
+        for sounds, a, b in words:
+            timings.append((clock, clock + sounds * per_sound, a, b))
+            clock += sounds * per_sound
+        clock = resume
+    return timings
+
+
+def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
     """Read a sentence aloud in French, replacing anything still playing.
 
     speed is a name from SPEECH_SPEEDS. Uses the Piper neural voice when it
-    is installed, otherwise spd-say.
+    is installed, otherwise spd-say. With the Piper voice, on_start(turn,
+    timings, started) is called from a worker thread as playback begins:
+    timings come from word_timings and started is a time.monotonic() value.
+    Returns the turn number; current_speech_turn() tells if it still plays.
     """
     stretch = SPEECH_SPEEDS.get(speed, SPEECH_SPEEDS[DEFAULT_SPEECH_SPEED])
     global _speech_turn
@@ -772,6 +873,9 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED):
                 return  # a newer sentence was requested meanwhile
             wav = speech_file()
             synthesise(sentence, wav, stretch)
+            timings = []
+            if on_start:
+                timings = word_timings(sentence, wav)
             with _speech_lock:
                 if turn != _speech_turn:
                     return
@@ -784,8 +888,15 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED):
                     _player_proc = subprocess.Popen(
                         [PLAYER, str(wav)],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if on_start:
+                on_start(turn, timings, time.monotonic())
 
     threading.Thread(target=run, daemon=True).start()
+    return turn
+
+
+def current_speech_turn():
+    return _speech_turn
 
 
 def cache_path(url=None):
@@ -906,6 +1017,9 @@ class NewsReader:
         self.active = None  # tag name of the highlighted sentence
         self.active_word = None  # (panel, sentence tag, word number)
         self.french = {}  # sentence tag -> French sentence, for speaking
+        # sentence tag -> (where the sentence starts in the French panel,
+        #                  [(char start, char end, link), ...] of its words)
+        self.french_layout = {}
         # panel -> sentence tag -> [(start index, end index, pos, link), ...]
         self.words = {text: {} for text in self.panels.values()}
         if self.settings["provider"]:
@@ -1020,6 +1134,10 @@ class NewsReader:
         # The hovered word and its translation: dark box, light text.
         text.tag_configure("word", background=FG, foreground=BG)
         text.tag_raise("word")
+        # The word being spoken right now, and its translation.
+        text.tag_configure("spoken", background=SPOKEN_COLOUR,
+                           foreground="#000000", underline=True)
+        text.tag_raise("spoken")
         text.tag_configure("speak", foreground=SPEAK_COLOUR)
         text.tag_bind("speak", "<Button-1>",
                       lambda e, t=text: self.on_speak(t, e))
@@ -1328,6 +1446,7 @@ class NewsReader:
         self.active = None
         self.active_word = None
         self.french = {}
+        self.french_layout = {}
         for lang, text in self.panels.items():
             text.config(state="normal")
             text.delete("1.0", "end")
@@ -1345,10 +1464,14 @@ class NewsReader:
                         text.insert("end", SPEAK_GLYPH, style + ("speak", tag))
                         text.insert("end", " ", style + (tag,))
                     start = text.index("end-1c")
+                    located = list(locate_words(
+                        pair[lang], pair.get(lang + "_pos", [])))
                     self.words[text][tag] = [
                         (f"{start}+{a}c", f"{start}+{b}c", pos, link)
-                        for a, b, pos, link in locate_words(
-                            pair[lang], pair.get(lang + "_pos", []))]
+                        for a, b, pos, link in located]
+                    if lang == "fr":
+                        self.french_layout[tag] = (
+                            start, [(a, b, link) for a, b, _, link in located])
                     if i == 0:
                         text.insert("end", pair[lang], ("headline", tag))
                         text.insert("end", "\n", "headline")
@@ -1399,12 +1522,68 @@ class NewsReader:
         for tag in text.tag_names(f"@{event.x},{event.y}"):
             if tag in self.french:
                 if speech_available():
-                    speak_french(self.french[tag], self.speed.get())
+                    self.clear_spoken()
+                    speak_french(
+                        self.french[tag], self.speed.get(),
+                        # Called from the speech thread: hand over to Tk's.
+                        on_start=lambda turn, timings, started, tag=tag:
+                        self.root.after(0, self.follow_speech, turn, tag,
+                                        timings, started))
                 else:
                     self.status.config(
                         text="Cannot speak: the French voice is not installed "
                              "(see the README).")
                 return
+
+    def clear_spoken(self):
+        for text in self.panels.values():
+            text.tag_remove("spoken", "1.0", "end")
+
+    def follow_speech(self, turn, tag, timings, started):
+        """Mark each word, and its translation, while it is being spoken."""
+        layout = self.french_layout.get(tag)
+        if layout is None or not timings:
+            return
+        sentence = self.french[tag]
+        shown = None
+
+        def tick():
+            nonlocal shown
+            if (turn != current_speech_turn()
+                    or self.french_layout.get(tag) is not layout):
+                self.clear_spoken()  # another sentence, or the page changed
+                return
+            elapsed = time.monotonic() - started - PLAYER_LATENCY_S
+            if elapsed >= timings[-1][1] + 0.25:
+                self.clear_spoken()
+                return
+            for number, (begin, end, a, b) in enumerate(timings):
+                if begin <= elapsed < end and number != shown:
+                    shown = number
+                    self.mark_spoken(tag, layout, sentence, a, b)
+                    break
+            self.root.after(30, tick)
+
+        tick()
+
+    def mark_spoken(self, tag, layout, sentence, a, b):
+        """Highlight characters a..b of a French sentence and their English."""
+        start, words = layout
+        french, english = self.panels["fr"], self.panels["en"]
+        self.clear_spoken()
+        # Which tagged words the spoken one covers ("l\u2019\u00e9lection" is two).
+        links = {link for wa, wb, link in words if link and wa < b and wb > a}
+        # Do not underline the punctuation attached to the word.
+        while a < b and not sentence[a].isalnum():
+            a += 1
+        while b > a and not sentence[b - 1].isalnum():
+            b -= 1
+        french.tag_add("spoken", f"{start}+{a}c", f"{start}+{b}c")
+        french.see(f"{start}+{a}c")
+        for begin, end, _, link in self.words[english].get(tag, ()):
+            if link in links:
+                english.tag_add("spoken", begin, end)
+                english.see(begin)
 
     def on_leave(self):
         self.set_active(None)
