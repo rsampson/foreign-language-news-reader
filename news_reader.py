@@ -728,15 +728,33 @@ def speech_available():
     return bool(piper_available() or shutil.which("spd-say"))
 
 
-def synthesise(sentence, wav_path, stretch=SPEECH_SPEEDS[DEFAULT_SPEECH_SPEED]):
-    """Write the sentence, spoken by the Piper voice, to a WAV file."""
+# Sound outputs (HDMI, Bluetooth, USB) go to sleep after a few idle seconds
+# and take a moment to wake, swallowing the start of whatever plays next.
+# A stretch of silence in front of the speech gives them time.
+LEAD_IN_ASLEEP_S = 0.8   # silence before speech when the output was idle
+LEAD_IN_AWAKE_S = 0.1    # when something was played moments ago
+OUTPUT_SLEEPS_AFTER_S = 3.0
+_last_audio_end = 0.0    # time.monotonic() when the last playback finished
+
+
+def synthesise(sentence, wav_path, stretch=SPEECH_SPEEDS[DEFAULT_SPEECH_SPEED],
+               lead_in=0.0):
+    """Write the sentence, spoken by the Piper voice, to a WAV file.
+
+    lead_in is the number of seconds of silence put before the speech.
+    """
     global _voice
     from piper import PiperVoice, SynthesisConfig
     if _voice is None:
         _voice = PiperVoice.load(str(voice_model()))
+    rate = _voice.config.sample_rate
     with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(rate)
+        wav_file.writeframes(bytes(2 * int(rate * lead_in)))
         _voice.synthesize_wav(
-            sentence, wav_file,
+            sentence, wav_file, set_wav_format=False,
             syn_config=SynthesisConfig(length_scale=stretch))
 
 
@@ -860,7 +878,7 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
         _stop_playback()
 
     def run():
-        global _player_proc
+        global _player_proc, _last_audio_end
         if not piper_available():
             subprocess.run(["spd-say", "-C"], capture_output=True)
             # spd-say rates run from -100 (slowest) to 100; 0 is normal.
@@ -872,7 +890,11 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
             if turn != _speech_turn:
                 return  # a newer sentence was requested meanwhile
             wav = speech_file()
-            synthesise(sentence, wav, stretch)
+            asleep = time.monotonic() - _last_audio_end > OUTPUT_SLEEPS_AFTER_S
+            synthesise(sentence, wav, stretch,
+                       LEAD_IN_ASLEEP_S if asleep else LEAD_IN_AWAKE_S)
+            with wave.open(str(wav)) as audio:
+                seconds = audio.getnframes() / audio.getframerate()
             timings = []
             if on_start:
                 timings = word_timings(sentence, wav)
@@ -888,6 +910,7 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
                     _player_proc = subprocess.Popen(
                         [PLAYER, str(wav)],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _last_audio_end = time.monotonic() + seconds
             if on_start:
                 on_start(turn, timings, time.monotonic())
 
