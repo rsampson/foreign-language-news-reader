@@ -461,8 +461,12 @@ def ask_claude(prompt, settings):
     except subprocess.TimeoutExpired:
         raise RuntimeError("claude took too long to respond.")
     if proc.returncode != 0:
-        raise RuntimeError(
-            "claude failed: " + (proc.stderr or proc.stdout).strip()[:400])
+        detail = (proc.stderr or proc.stdout).strip()
+        if re.search(r"authenticat|oauth|log ?in|credential|401", detail, re.I):
+            raise RuntimeError(
+                "Claude Code is signed out. Open a terminal, run "
+                "\"claude auth login\", sign in, then click Refresh.")
+        raise RuntimeError("claude failed: " + detail[:400])
     return proc.stdout
 
 
