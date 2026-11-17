@@ -54,7 +54,7 @@ AI_TIMEOUT_S = 1800  # local models on a CPU can be slow
 
 APP_NAME = "Foreign Language News Reader"
 APP_ID = "foreign-language-news-reader"
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 FROZEN = getattr(sys, "frozen", False)  # True inside the packaged app
 APP_DIR = Path(__file__).resolve().parent
 # Read-only files shipped with the app (voice model, icon).

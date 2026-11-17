@@ -54,6 +54,6 @@ if sys.platform == "darwin":
         name="Foreign Language News Reader.app",
         icon=str(ROOT / "packaging" / "icon.icns"),
         bundle_identifier="io.github.foreign-language-news-reader",
-        info_plist={"CFBundleShortVersionString": "1.1.2",
+        info_plist={"CFBundleShortVersionString": "1.1.3",
                     "NSHighResolutionCapable": True},
     )

@@ -5,7 +5,7 @@
 [Setup]
 AppId={{F2DB3FFE-0330-4E1B-A146-6ACE55E9DF43}
 AppName=Foreign Language News Reader
-AppVersion=1.1.2
+AppVersion=1.1.3
 AppPublisher=Foreign Language News Reader
 DefaultDirName={autopf}\Foreign Language News Reader
 DefaultGroupName=Foreign Language News Reader
