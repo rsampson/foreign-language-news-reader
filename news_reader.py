@@ -79,6 +79,18 @@ def _user_data_dir():
     return base / APP_ID
 
 
+if FROZEN and sys.platform.startswith("linux"):
+    # The packaged app points LD_LIBRARY_PATH at its own bundled libraries.
+    # Programs it starts (the terminal, the browser, the audio player,
+    # Claude Code) would load those instead of the system's and could fail,
+    # so give them the original setting back. The app itself is unaffected:
+    # the variable is only read when a program starts.
+    _original = os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+    if _original is None:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+    else:
+        os.environ["LD_LIBRARY_PATH"] = _original
+
 DATA_DIR = _user_data_dir()
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
@@ -115,6 +127,103 @@ KEY_SERVICES = [
     ("Mistral", "openai", "https://api.mistral.ai/v1",
      "https://console.mistral.ai/api-keys"),
 ]
+CLAUDE_CODE_SETUP_URL = "https://code.claude.com/docs/en/setup"
+
+
+def claude_command():
+    """Full path of the Claude Code command-line tool, or None.
+
+    Besides PATH, the usual install folders are checked: an app started
+    from the macOS Finder or a desktop menu may not see the shell's PATH.
+    """
+    found = shutil.which("claude")
+    if found:
+        return found
+    home = Path.home()
+    candidates = [home / ".local" / "bin" / "claude",
+                  home / ".claude" / "local" / "claude",
+                  Path("/opt/homebrew/bin/claude"),
+                  Path("/usr/local/bin/claude")]
+    if sys.platform == "win32":
+        candidates = [home / ".local" / "bin" / "claude.exe",
+                      Path(os.environ.get("APPDATA", home)) / "npm" / "claude.cmd"]
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def claude_sign_in_status(timeout=20):
+    """Ask Claude Code whether it is signed in.
+
+    Returns (state, plan): state is "signed-in", "signed-out", "missing"
+    (Claude Code is not installed) or "unknown"; plan is e.g. "pro".
+    The account's email address is deliberately never read out.
+    """
+    command = claude_command()
+    if not command:
+        return "missing", ""
+    try:
+        done = subprocess.run(
+            [command, "auth", "status", "--json"], capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        info = json.loads(done.stdout)  # printed even when signed out
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return "unknown", ""
+    if not isinstance(info, dict):
+        return "unknown", ""
+    if info.get("loggedIn"):
+        return "signed-in", str(info.get("subscriptionType") or "")
+    return "signed-out", ""
+
+
+def open_claude_sign_in():
+    """Start Claude Code's sign-in in a terminal window.
+
+    The sign-in opens the browser and may ask for a code to be pasted back,
+    so it needs a terminal. Returns None when a terminal was opened, or the
+    command for the user to type when none could be.
+    """
+    command = claude_command()
+    if not command:
+        raise RuntimeError("Claude Code is not installed on this computer.")
+    # --claudeai: a Claude subscription, never API (Console) billing.
+    args = [command, "auth", "login", "--claudeai"]
+    typed = "claude auth login"
+    if sys.platform == "win32":
+        subprocess.Popen(["cmd", "/c", "start", "Claude sign-in",
+                          "cmd", "/k", *args])
+        return None
+    import shlex
+    script = (shlex.join(args) + "; echo; echo 'You can close this window "
+              "now and go back to the app.'; read _")
+    if sys.platform == "darwin":
+        handle, path = tempfile.mkstemp(suffix=".command",
+                                        dir=speech_file().parent)
+        with os.fdopen(handle, "w") as file:
+            file.write("#!/bin/sh\n" + script + "\n")
+        os.chmod(path, 0o700)
+        subprocess.Popen(["open", "-a", "Terminal", path])
+        return None
+    for terminal, flag in (("gnome-terminal", "--"), ("konsole", "-e"),
+                           ("xfce4-terminal", "-x"), ("mate-terminal", "-x"),
+                           ("x-terminal-emulator", "-e"), ("xterm", "-e")):
+        found = shutil.which(terminal)
+        if not found:
+            continue
+        opened = subprocess.Popen([found, flag, "sh", "-c", script],
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        try:
+            if opened.wait(timeout=1) != 0:
+                continue  # this terminal failed to start; try the next
+        except subprocess.TimeoutExpired:
+            pass  # still running: the window is open
+        return None
+    return typed
+
+
 # Claude models that accept the server-side refusal fallback.
 ANTHROPIC_FALLBACK_MODELS = {
     "claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5",
@@ -122,7 +231,7 @@ ANTHROPIC_FALLBACK_MODELS = {
 DEFAULT_SETTINGS = {
     # "" means not chosen yet: the first-launch screen asks. Someone with the
     # Claude Code command-line tool installed starts on that instead.
-    "provider": "claude" if shutil.which("claude") else "",
+    "provider": "claude" if claude_command() else "",
     # Word detail = parts of speech and word-to-word matching. It needs a
     # strong model; turn it off for an AI that cannot produce it reliably.
     "word_detail": True,
@@ -474,12 +583,17 @@ atexit.register(stop_ai_processes)
 def ask_claude(prompt, settings):
     if _shutting_down:
         raise RuntimeError("The app is closing.")
+    command = claude_command()
+    if not command:
+        raise RuntimeError("Claude Code is not installed on this computer, "
+                           "or could not be found. Choose another AI in "
+                           "Settings.")
     try:
         # Run from an empty directory so no project instructions are loaded.
         with tempfile.TemporaryDirectory() as cwd:
             proc = subprocess.Popen(
                 # No tools: the text being summarised comes from the web.
-                ["claude", "-p", "--model", settings["claude_model"],
+                [command, "-p", "--model", settings["claude_model"],
                  "--tools", ""],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, cwd=cwd,
@@ -505,8 +619,8 @@ def ask_claude(prompt, settings):
         detail = (stderr or stdout).strip()
         if re.search(r"authenticat|oauth|log ?in|credential|401", detail, re.I):
             raise RuntimeError(
-                "Claude Code is signed out. Open a terminal, run "
-                "\"claude auth login\", sign in, then click Refresh.")
+                "Claude Code is signed out. Open Settings and click "
+                "\"Sign in to Claude\u2026\", then click Refresh.")
         raise RuntimeError("claude failed: " + detail[:400])
     return stdout
 
@@ -1422,6 +1536,91 @@ class NewsReader:
             side="right", padx=6)
         refresh()
 
+    def _claude_sign_in_row(self, win):
+        """Settings row showing whether Claude Code is signed in, with a
+        button that opens its sign-in."""
+        row = tk.Frame(win, bg=BG)
+        row.pack(fill="x", padx=(24, 0), pady=(2, 1))
+        tk.Label(row, text="Account", bg=BG, fg=FG, width=10,
+                 anchor="w").pack(side="left")
+        status = tk.Label(row, text="Checking\u2026", bg=BG, fg=MUTED,
+                          anchor="w")
+        status.pack(side="left")
+        help_text = tk.Label(win, bg=BG, fg=MUTED, justify="left",
+                             anchor="w", wraplength=440)
+        sign_in = tk.Button(row, text="Sign in to Claude\u2026")
+        check = tk.Button(row, text="Check again")
+        waiting = {"until": 0.0}  # polling deadline after a sign-in starts
+
+        def show(state, plan):
+            if not status.winfo_exists():
+                return  # the Settings window was closed
+            sign_in.pack_forget()
+            check.pack_forget()
+            help_text.pack_forget()
+            if state == "signed-in":
+                waiting["until"] = 0.0
+                status.config(text="Signed in" + (f" ({plan.title()} plan)"
+                                                  if plan else ""), fg=FG)
+                check.pack(side="left", padx=(10, 0))
+                return
+            if state == "missing":
+                status.config(text="Claude Code is not installed", fg=FG)
+                help_text.config(
+                    text="This option needs the Claude Code command-line "
+                         "tool, signed in with a Claude Pro or Max "
+                         "subscription. Click here for installation "
+                         "instructions.", fg="#1a5fb4", cursor="hand2")
+                help_text.bind("<Button-1>", lambda e: webbrowser.open(
+                    CLAUDE_CODE_SETUP_URL))
+                help_text.pack(fill="x", padx=(24, 0))
+                return
+            status.config(text="Signed out" if state == "signed-out"
+                          else "Sign-in status unknown", fg=SPEAK_COLOUR)
+            sign_in.pack(side="left", padx=(10, 0))
+            check.pack(side="left", padx=(6, 0))
+            if time.monotonic() < waiting["until"]:
+                win.after(3000, refresh)  # keep watching for the sign-in
+
+        def refresh():
+            def work():
+                result = claude_sign_in_status()
+                try:
+                    self.root.after(0, show, *result)
+                except (RuntimeError, tk.TclError):
+                    pass  # the app was closed
+            if status.winfo_exists():
+                threading.Thread(target=work, daemon=True).start()
+
+        def start_sign_in():
+            try:
+                typed = open_claude_sign_in()
+            except (OSError, RuntimeError) as exc:
+                help_text.config(text=f"Could not start the sign-in: {exc}",
+                                 fg=MUTED, cursor="")
+                help_text.pack(fill="x", padx=(24, 0))
+                return
+            if typed:
+                help_text.config(text="Open a terminal and type: " + typed
+                                 + "\nThen click Check again.", fg=MUTED,
+                                 cursor="")
+            else:
+                help_text.config(
+                    text="A terminal window has opened and your browser "
+                         "will ask you to sign in to Claude. If the "
+                         "terminal asks for a code, copy it from the "
+                         "browser and paste it there. This window updates "
+                         "by itself when you are signed in.", fg=MUTED,
+                    cursor="")
+                waiting["until"] = time.monotonic() + 600
+                win.after(3000, refresh)
+            help_text.pack(fill="x", padx=(24, 0))
+
+        sign_in.config(command=start_sign_in)
+        check.config(command=lambda: (status.config(text="Checking\u2026",
+                                                    fg=MUTED), refresh()))
+        refresh()
+
     def open_settings(self):
         """Dialog for choosing which AI writes the summaries."""
         win = tk.Toplevel(self.root, bg=BG, padx=18, pady=14)
@@ -1471,6 +1670,8 @@ class NewsReader:
                            highlightthickness=0).pack(fill="x")
             for row in layout[name]:
                 field(*row)
+            if name == "claude":
+                self._claude_sign_in_row(win)
 
         heading("FEATURES")
         tk.Checkbutton(
