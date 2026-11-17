@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Side-by-side French / English news reader for learning French.
+"""Side-by-side news reader for learning French or Spanish from English.
 
-Fetches the top 10 items from Le Monde's front-page RSS feed, asks an AI
-(the `claude` CLI by default; Ollama or an OpenAI-compatible service can be
-chosen under Settings) for a short French summary of each with a
-sentence-by-sentence English translation, and shows them in two panels. Hovering a sentence
-highlights it and its counterpart in the other panel, with each word
-coloured by its part of speech (see the key at the bottom of the window).
-Hovering a word also marks the word or words that translate it. The small
-play button before each French sentence reads it aloud, using the Piper
-voice in .venv/ and voices/ if present, otherwise spd-say.
+Fetches the top 10 items from a front-page news feed in the chosen language
+(Le Monde for French, El Pa\u00eds for Spanish), asks an AI (the `claude` CLI
+by default; others can be chosen under Settings) for a short summary of each
+in that language with a sentence-by-sentence English translation, and shows
+them in two panels. Hovering a sentence highlights it and its counterpart in
+the other panel, with each word coloured by its part of speech (see the key
+at the bottom of the window). Hovering a word also marks the word or words
+that translate it. The small play button before each sentence reads it
+aloud, using a Piper voice (French is bundled, others download on first
+use), otherwise spd-say.
 
 Instead of the news, any web page can be read the same way: paste its
 address into the "Web page" box.
@@ -44,8 +45,60 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-FEED_URL = "https://www.lemonde.fr/rss/une.xml"
-FEED_NAME = "Le Monde"
+# The languages the app teaches. Each has its own news source, voice,
+# colour-key labels and notes for the AI about the language's grammar.
+# Voices come from https://huggingface.co/rhasspy/piper-voices; French is
+# bundled in the downloadable app, any other is downloaded on first use and
+# checked against the SHA-256 checksums pinned here.
+POS_NAMES_FR = {"NOUN": "nom", "PROPN": "nom propre", "VERB": "verbe",
+                "ADJ": "adjectif", "ADV": "adverbe", "PRON": "pronom",
+                "DET": "d\u00e9terminant", "PREP": "pr\u00e9position",
+                "CONJ": "conjonction", "NUM": "nombre"}
+POS_NAMES_ES = {"NOUN": "sustantivo", "PROPN": "nombre propio",
+                "VERB": "verbo", "ADJ": "adjetivo", "ADV": "adverbio",
+                "PRON": "pronombre", "DET": "determinante",
+                "PREP": "preposici\u00f3n", "CONJ": "conjunci\u00f3n",
+                "NUM": "n\u00famero"}
+LANGUAGES = {
+    "fr": {
+        "name": "French", "native": "Fran\u00e7ais", "panel": "FRAN\u00c7AIS",
+        "feed_url": "https://www.lemonde.fr/rss/une.xml",
+        "feed_name": "Le Monde",
+        "voice": "fr_FR-siwis-medium", "voice_path": "fr/fr_FR/siwis/medium",
+        "voice_sha256": {
+            ".onnx": "b1d946fd68d0347155fa59bce0a018924abbef3c1561181db45ca463d83963ef",
+            ".onnx.json": "df814aa3dfedd00510a07144442cc0a220ff21e43d03c3b078444fc0be68fc37"},
+        "spd_say": "fr",
+        "headline_note": 'drop prefixes such as "EN DIRECT,"',
+        "grammar": ('Contractions such as "du" or "au" are PREP. Split French '
+                    "elisions into two tokens (l\u2019/DET Estonie/PROPN, "
+                    "qu\u2019/CONJ il/PRON)."),
+        "example": "Le/DET/1 chat/NOUN/2 noir/ADJ/3 dort/VERB/4",
+        "example_link": "a/VERB/4 annonc\u00e9/VERB/4",
+        "pos_names": POS_NAMES_FR,
+    },
+    "es": {
+        "name": "Spanish", "native": "Espa\u00f1ol", "panel": "ESPA\u00d1OL",
+        "feed_url": ("https://feeds.elpais.com/mrss-s/pages/ep/site/"
+                     "elpais.com/portada"),
+        "feed_name": "El Pa\u00eds",
+        "voice": "es_ES-davefx-medium", "voice_path": "es/es_ES/davefx/medium",
+        "voice_sha256": {
+            ".onnx": "d2c9224e122321aac3c33343957fff4d0f465226cb74c66b0f520ca3f8c0dd07",
+            ".onnx.json": "531c4051502e1acbc10b42437f11679bfce9e3919e1796e51fabd73e01e7fd2e"},
+        "spd_say": "es",
+        "headline_note": ('drop section labels such as "Claves |" or '
+                          '"\u00daltima hora:"'),
+        "grammar": ('Contractions such as "del" or "al" are PREP. Keep a verb '
+                    "and the pronouns attached to it as one token "
+                    "(d\u00e1rselo/VERB). Leave out the opening marks "
+                    "\u00bf and \u00a1."),
+        "example": "El/DET/1 gato/NOUN/2 negro/ADJ/3 duerme/VERB/4",
+        "example_link": "ha/VERB/4 anunciado/VERB/4",
+        "pos_names": POS_NAMES_ES,
+    },
+}
+DEFAULT_LANGUAGE = "fr"
 ITEM_COUNT = 10  # news stories, or the most sections made from a web page
 MAX_PAGE_BYTES = 3_000_000  # how much of a web page to download
 MAX_PAGE_CHARS = 12_000     # how much of its text to give the AI
@@ -54,7 +107,7 @@ AI_TIMEOUT_S = 1800  # local models on a CPU can be slow
 
 APP_NAME = "Foreign Language News Reader"
 APP_ID = "foreign-language-news-reader"
-VERSION = "1.1.3"
+VERSION = "1.2.0"
 FROZEN = getattr(sys, "frozen", False)  # True inside the packaged app
 APP_DIR = Path(__file__).resolve().parent
 # Read-only files shipped with the app (voice model, icon).
@@ -235,6 +288,7 @@ DEFAULT_SETTINGS = {
     # Word detail = parts of speech and word-to-word matching. It needs a
     # strong model; turn it off for an AI that cannot produce it reliably.
     "word_detail": True,
+    "language": DEFAULT_LANGUAGE,
     "speech_speed": DEFAULT_SPEECH_SPEED,
     "anthropic_model": "claude-opus-5-5",
     "anthropic_key": "",
@@ -247,7 +301,6 @@ DEFAULT_SETTINGS = {
 }
 # Piper neural voice. The packaged app includes it; run from source it needs
 # `pip install piper-tts` and the voice model in voices/ (see the README).
-PIPER_VOICE = "fr_FR-siwis-medium"
 VOICE_DIRS = [RESOURCE_DIR / "voices", DATA_DIR / "voices"]
 if sys.platform == "darwin":
     PLAYER = shutil.which("afplay")
@@ -271,7 +324,7 @@ def speech_file(name="speech.wav"):
         _speech_dir = tempfile.mkdtemp(prefix=APP_ID + "-")
         atexit.register(shutil.rmtree, _speech_dir, ignore_errors=True)
     return Path(_speech_dir) / name
-SPEAK_GLYPH = "\u25ba"  # the small play button in front of each French sentence
+SPEAK_GLYPH = "\u25ba"  # the small play button in front of each sentence
 CACHE_DIR = DATA_DIR / "cache"
 
 BG = "#fbf9f4"
@@ -281,29 +334,30 @@ SPEAK_COLOUR = "#b0462f"
 SPOKEN_COLOUR = "#ff9d2e"  # behind the word being read aloud
 HIGHLIGHT = "#efe9da"  # band behind the whole hovered sentence
 
-# Part-of-speech tag -> (key label, background colour for the word).
+# Part-of-speech tag -> (English name, background colour for the word).
+# The key shows the English name with the name in the language being read.
 PARTS_OF_SPEECH = {
-    "NOUN":  ("Noun · nom", "#a8d1ff"),
-    "PROPN": ("Proper noun · nom propre", "#cdc4ff"),
-    "VERB":  ("Verb · verbe", "#ffb3b3"),
-    "ADJ":   ("Adjective · adjectif", "#b5e6ad"),
-    "ADV":   ("Adverb · adverbe", "#ffcf94"),
-    "PRON":  ("Pronoun · pronom", "#f7b6e0"),
-    "DET":   ("Article/determiner · déterminant", "#d6d6d6"),
-    "PREP":  ("Preposition · préposition", "#fff08a"),
-    "CONJ":  ("Conjunction · conjonction", "#9fe3dc"),
-    "NUM":   ("Number · nombre", "#dcc3a0"),
+    "NOUN":  ("Noun", "#a8d1ff"),
+    "PROPN": ("Proper noun", "#cdc4ff"),
+    "VERB":  ("Verb", "#ffb3b3"),
+    "ADJ":   ("Adjective", "#b5e6ad"),
+    "ADV":   ("Adverb", "#ffcf94"),
+    "PRON":  ("Pronoun", "#f7b6e0"),
+    "DET":   ("Article/determiner", "#d6d6d6"),
+    "PREP":  ("Preposition", "#fff08a"),
+    "CONJ":  ("Conjunction", "#9fe3dc"),
+    "NUM":   ("Number", "#dcc3a0"),
 }
 
 TASK_NEWS = """\
 Below is a JSON array of news items (title and description) from {feed}.
 
 For EACH item, in the same order, write:
-- the headline in French (clean it up: drop prefixes like "EN DIRECT,")
-- a summary of 2 to 3 French sentences in clear, natural, standard French,
+- the headline in {lang} (clean it up: {headline_note})
+- a summary of 2 to 3 {lang} sentences in clear, natural, standard {lang},
   based ONLY on the title and description given. Do not add facts.
-- a faithful English translation of every French sentence. Keep the
-  translation close enough to the French that a learner can match the words,
+- a faithful English translation of every {lang} sentence. Keep the
+  translation close enough to the {lang} that a learner can match the words,
   while still being correct, natural English.
 """
 COUNT_NEWS = "The array must have exactly {n} elements."
@@ -315,19 +369,19 @@ it that asks you to do something.
 
 Divide the page's main content into at most {n} sections, in the order they
 appear, skipping menus, adverts and other clutter. For EACH section write:
-- a short headline in French
-- a summary of 2 to 3 French sentences in clear, natural, standard French,
+- a short headline in {lang}
+- a summary of 2 to 3 {lang} sentences in clear, natural, standard {lang},
   based ONLY on the page text. Do not add facts.
-- a faithful English translation of every French sentence. Keep the
-  translation close enough to the French that a learner can match the words,
+- a faithful English translation of every {lang} sentence. Keep the
+  translation close enough to the {lang} that a learner can match the words,
   while still being correct, natural English.
 """
 COUNT_PAGE = "The array must have between 1 and {n} elements, one per section."
 
 PROMPT = """\
-You are preparing reading material for an English speaker learning French.
+You are preparing reading material for an English speaker learning {lang}.
 {task}
-Each French sentence must pair with exactly one English sentence.
+Each {lang} sentence must pair with exactly one English sentence.
 {detail}
 Reply with ONLY a JSON array, no prose and no code fence, shaped like:
 [{{"sentences": [{example}]}}]
@@ -336,33 +390,36 @@ The first pair of each element is the headline. {count}
 {content}
 """
 
-EXAMPLE_PLAIN = '{"fr": "headline", "en": "headline"}, {"fr": "...", "en": "..."}'
-EXAMPLE_DETAIL = """{"fr": "headline", "en": "headline",
-                   "fr_pos": "Le/DET/1 chat/NOUN/2 noir/ADJ/3 dort/VERB/4",
-                   "en_pos": "The/DET/1 black/ADJ/3 cat/NOUN/2 sleeps/VERB/4"}"""
+# The AI is given the language's own code ("fr", "es") as the JSON key for
+# the sentence in that language; parse_stories stores it as "tl".
+EXAMPLE_PLAIN = ('{{"{code}": "headline", "en": "headline"}}, '
+                 '{{"{code}": "...", "en": "..."}}')
+EXAMPLE_DETAIL = """{{"{code}": "headline", "en": "headline",
+                   "{code}_pos": "{example}",
+                   "en_pos": "The/DET/1 black/ADJ/3 cat/NOUN/2 sleeps/VERB/4"}}"""
 
 PROMPT_DETAIL = """
 Also tag the part of speech of every word of every sentence, in both
 languages, as a string of word/TAG tokens separated by spaces, in sentence
-order. Tags: {tags}. Auxiliary and modal verbs are VERB. Contractions such
-as "du" or "au" are PREP. Split French elisions into two tokens
-(l’/DET Estonie/PROPN, qu’/CONJ il/PRON) and English possessives likewise.
-Leave punctuation out. Spell each word exactly as it appears in the sentence.
+order. Tags: {tags}. Auxiliary and modal verbs are VERB. {grammar} Split
+English possessives into two tokens. Leave punctuation out. Spell each word
+exactly as it appears in the sentence.
 
 Finally, append a link number to every token (word/TAG/N) showing which
-words translate each other. Within one sentence pair, a French word and the
+words translate each other. Within one sentence pair, a {lang} word and the
 English word or words that translate it share the same N, counting from 1
 in each pair. A multi-word match shares one number on both sides
-(a/VERB/4 annoncé/VERB/4 with announced/VERB/4). A word with no counterpart
+({example_link} with announced/VERB/4). A word with no counterpart
 in the other language gets 0.
 """
 
 
 # ---------------------------------------------------------------- data
 
-def fetch_feed():
+def fetch_feed(language):
     """Return the top ITEM_COUNT feed items as dicts with title/description."""
-    req = urllib.request.Request(FEED_URL, headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(LANGUAGES[language]["feed_url"],
+                                 headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20, context=SSL_CONTEXT) as resp:
         root = ET.fromstring(resp.read())
     items = []
@@ -536,6 +593,8 @@ def load_settings():
         pass  # no settings yet, or unreadable: use the defaults
     if settings["provider"] not in PROVIDERS:
         settings["provider"] = DEFAULT_SETTINGS["provider"]
+    if settings["language"] not in LANGUAGES:
+        settings["language"] = DEFAULT_LANGUAGE
     return settings
 
 
@@ -770,35 +829,57 @@ ASK = {"anthropic": ask_anthropic, "claude": ask_claude,
        "ollama": ask_ollama, "openai": ask_openai}
 
 
-def summarise(task, count, content, settings):
-    """Ask the configured AI for paired French/English sentences."""
-    detail = settings["word_detail"]
-    prompt = PROMPT.format(
-        task=task, count=count, content=content,
-        detail=PROMPT_DETAIL.format(tags=", ".join(PARTS_OF_SPEECH))
+def build_prompt(task, count, content, language, detail):
+    """The full request to the AI, for one language."""
+    info = LANGUAGES[language]
+    example = (EXAMPLE_DETAIL if detail else EXAMPLE_PLAIN).format(
+        code=language, example=info["example"])
+    return PROMPT.format(
+        lang=info["name"], task=task, count=count, content=content,
+        detail=PROMPT_DETAIL.format(
+            tags=", ".join(PARTS_OF_SPEECH), grammar=info["grammar"],
+            lang=info["name"], example_link=info["example_link"])
         if detail else "",
-        example=EXAMPLE_DETAIL if detail else EXAMPLE_PLAIN)
+        example=example)
+
+
+def summarise(task, count, content, settings):
+    """Ask the configured AI for paired sentences: the language being
+    learned and English."""
+    language = settings["language"]
+    prompt = build_prompt(task, count, content, language,
+                          settings["word_detail"])
     if settings["provider"] not in ASK:
         raise RuntimeError("No AI has been chosen yet. Open Settings.")
-    return parse_stories(ASK[settings["provider"]](prompt, settings))
+    return parse_stories(ASK[settings["provider"]](prompt, settings), language)
 
 
 def summarise_news(items, settings):
+    info = LANGUAGES[settings["language"]]
     return summarise(
-        TASK_NEWS.format(feed=FEED_NAME), COUNT_NEWS.format(n=len(items)),
+        TASK_NEWS.format(feed=info["feed_name"], lang=info["name"],
+                         headline_note=info["headline_note"]),
+        COUNT_NEWS.format(n=len(items)),
         "News items:\n" + json.dumps(items, ensure_ascii=False, indent=1),
         settings)
 
 
 def summarise_page(page, settings):
     return summarise(
-        TASK_PAGE.format(title=page["title"], n=ITEM_COUNT),
+        TASK_PAGE.format(title=page["title"], n=ITEM_COUNT,
+                         lang=LANGUAGES[settings["language"]]["name"]),
         COUNT_PAGE.format(n=ITEM_COUNT),
         "Page text:\n" + page["text"], settings)
 
 
-def parse_stories(text):
-    """Extract and validate the JSON array of stories from the AI's reply."""
+def parse_stories(text, language=DEFAULT_LANGUAGE):
+    """Extract and validate the JSON array of stories from the AI's reply.
+
+    The AI labels the sentence in the language being learned with that
+    language's code; each pair is stored as {"tl", "en", "tl_pos",
+    "en_pos"} so the rest of the app does not depend on the language.
+    """
+    code = language
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if not match:
         raise RuntimeError("The AI did not return JSON: " + text.strip()[:200])
@@ -812,12 +893,12 @@ def parse_stories(text):
                 entry.get("sentences"), list):
             continue
         pairs = [
-            {"fr": p["fr"].strip(), "en": p["en"].strip(),
-             "fr_pos": parse_tagged(p.get("fr_pos")),
+            {"tl": p[code].strip(), "en": p["en"].strip(),
+             "tl_pos": parse_tagged(p.get(code + "_pos")),
              "en_pos": parse_tagged(p.get("en_pos"))}
             for p in entry["sentences"]
-            if isinstance(p, dict) and isinstance(p.get("fr"), str)
-            and isinstance(p.get("en"), str) and p["fr"].strip()
+            if isinstance(p, dict) and isinstance(p.get(code), str)
+            and isinstance(p.get("en"), str) and p[code].strip()
             and p["en"].strip()
         ]
         if pairs:
@@ -865,26 +946,84 @@ _speech_lock = threading.Lock()   # guards the three values below
 _synth_lock = threading.Lock()    # one sentence is synthesised at a time
 _speech_turn = 0     # bumped on every request so older ones give up
 _player_proc = None  # the program playing the current sentence, if any
-_voice = None        # the loaded Piper voice
+_voices = {}         # loaded Piper voices, by voice name
+VOICE_DOWNLOAD_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
 
-def voice_model():
-    """Path of the French voice model, or None if it is not installed."""
+def voice_model(language=DEFAULT_LANGUAGE):
+    """Path of a language's voice model, or None if it is not installed."""
+    name = LANGUAGES[language]["voice"]
     for folder in VOICE_DIRS:
-        model = folder / f"{PIPER_VOICE}.onnx"
-        if model.exists():
+        model = folder / f"{name}.onnx"
+        if model.exists() and (folder / f"{name}.onnx.json").exists():
             return model
     return None
 
 
-def piper_available():
-    return (voice_model() is not None
-            and importlib.util.find_spec("piper") is not None
+def piper_ready():
+    """True when the Piper engine and a sound player are available."""
+    return (importlib.util.find_spec("piper") is not None
             and (PLAYER is not None or sys.platform == "win32"))
 
 
-def speech_available():
-    return bool(piper_available() or shutil.which("spd-say"))
+def piper_available(language=DEFAULT_LANGUAGE):
+    return voice_model(language) is not None and piper_ready()
+
+
+def speech_available(language=DEFAULT_LANGUAGE):
+    return bool(piper_available(language) or shutil.which("spd-say"))
+
+
+def download_voice(language, progress=None):
+    """Download a language's Piper voice into the user's voices folder.
+
+    Each file is written to a .part file, checked against the SHA-256 pinned
+    in LANGUAGES and only then moved into place, the model last, so a broken
+    or tampered download is never used. progress(done, total) reports bytes.
+    """
+    info = LANGUAGES[language]
+    folder = DATA_DIR / "voices"
+    folder.mkdir(parents=True, exist_ok=True)
+    files = list(info["voice_sha256"].items())  # (".onnx", hash), ...
+    sizes, total, done = {}, 0, 0
+    downloaded = []
+    try:
+        # The large model first, so the progress shown only ever rises.
+        for suffix, expected in sorted(files, key=lambda f: f[0] != ".onnx"):
+            name = info["voice"] + suffix
+            url = f"{VOICE_DOWNLOAD_BASE}/{info['voice_path']}/{name}"
+            part = folder / (name + ".part")
+            downloaded.append(part)  # removed below if anything goes wrong
+            digest = hashlib.sha256()
+            req = urllib.request.Request(
+                url, headers={"User-Agent": f"{APP_ID}/{VERSION}"})
+            # Redirects to the download network are fine here: the content
+            # is verified by its checksum below.
+            with urllib.request.urlopen(req, timeout=60,
+                                        context=SSL_CONTEXT) as resp, \
+                    open(part, "wb") as out:
+                sizes[suffix] = int(resp.headers.get("Content-Length") or 0)
+                # The small file's size is not known yet: allow for it.
+                total = sum(sizes.values()) + (8192 if len(sizes) == 1 else 0)
+                while chunk := resp.read(1 << 16):
+                    out.write(chunk)
+                    digest.update(chunk)
+                    done += len(chunk)
+                    if progress:
+                        progress(done, max(total, done))
+            if digest.hexdigest() != expected:
+                raise RuntimeError(f"The downloaded {info['name']} voice "
+                                   "failed its integrity check.")
+        # Both verified: move into place, the model last.
+        for part in sorted(downloaded, key=lambda f: f.name.endswith(".onnx.part")):
+            os.replace(part, part.with_name(part.name[:-len(".part")]))
+        downloaded = []
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Could not download the {info['name']} voice "
+                           f"({getattr(exc, 'reason', exc)}).")
+    finally:
+        for part in downloaded:
+            part.unlink(missing_ok=True)
 
 
 # Sound outputs (HDMI, Bluetooth, USB) go to sleep after a few idle seconds
@@ -896,23 +1035,34 @@ OUTPUT_SLEEPS_AFTER_S = 3.0
 _last_audio_end = 0.0    # time.monotonic() when the last playback finished
 
 
+def load_voice(language=DEFAULT_LANGUAGE):
+    """The Piper voice for a language, loaded once."""
+    from piper import PiperVoice
+    name = LANGUAGES[language]["voice"]
+    if name not in _voices:
+        model = voice_model(language)
+        if model is None:
+            raise RuntimeError(f"The {LANGUAGES[language]['name']} voice is "
+                               "not installed.")
+        _voices[name] = PiperVoice.load(str(model))
+    return _voices[name]
+
+
 def synthesise(sentence, wav_path, stretch=SPEECH_SPEEDS[DEFAULT_SPEECH_SPEED],
-               lead_in=0.0):
-    """Write the sentence, spoken by the Piper voice, to a WAV file.
+               lead_in=0.0, language=DEFAULT_LANGUAGE):
+    """Write the sentence, spoken by the language's Piper voice, to a WAV.
 
     lead_in is the number of seconds of silence put before the speech.
     """
-    global _voice
-    from piper import PiperVoice, SynthesisConfig
-    if _voice is None:
-        _voice = PiperVoice.load(str(voice_model()))
-    rate = _voice.config.sample_rate
+    from piper import SynthesisConfig
+    voice = load_voice(language)
+    rate = voice.config.sample_rate
     with wave.open(str(wav_path), "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(rate)
         wav_file.writeframes(bytes(2 * int(rate * lead_in)))
-        _voice.synthesize_wav(
+        voice.synthesize_wav(
             sentence, wav_file, set_wav_format=False,
             syn_config=SynthesisConfig(length_scale=stretch))
 
@@ -956,7 +1106,7 @@ def _speech_and_silences(wav_path):
     return first / 100, (last + 1) / 100, gaps
 
 
-def word_timings(sentence, wav_path):
+def word_timings(sentence, wav_path, language=DEFAULT_LANGUAGE):
     """Estimate when each word of a spoken sentence is heard.
 
     Returns [(start_s, end_s, char_start, char_end), ...], one entry per
@@ -972,7 +1122,7 @@ def word_timings(sentence, wav_path):
     for match in re.finditer(r"\S+", sentence):
         token = match.group()
         try:
-            sounds = sum(1 for group in _voice.phonemize(token)
+            sounds = sum(1 for group in load_voice(language).phonemize(token)
                          for sound in group if sound not in SILENT_PHONEMES)
         except Exception:
             sounds = sum(ch.isalnum() for ch in token)
@@ -1020,8 +1170,9 @@ def word_timings(sentence, wav_path):
     return timings
 
 
-def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
-    """Read a sentence aloud in French, replacing anything still playing.
+def speak_aloud(sentence, language=DEFAULT_LANGUAGE,
+                speed=DEFAULT_SPEECH_SPEED, on_start=None):
+    """Read a sentence aloud in its language, replacing anything playing.
 
     speed is a name from SPEECH_SPEEDS. Uses the Piper neural voice when it
     is installed, otherwise spd-say. With the Piper voice, on_start(turn,
@@ -1038,11 +1189,12 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
 
     def run():
         global _player_proc, _last_audio_end
-        if not piper_available():
+        if not piper_available(language):
             subprocess.run(["spd-say", "-C"], capture_output=True)
             # spd-say rates run from -100 (slowest) to 100; 0 is normal.
             rate = max(-100, round((1 - stretch) * 110))
-            subprocess.run(["spd-say", "-l", "fr", "-r", str(rate),
+            subprocess.run(["spd-say", "-l", LANGUAGES[language]["spd_say"],
+                            "-r", str(rate),
                             "--", sentence], capture_output=True)
             return
         with _synth_lock:
@@ -1051,12 +1203,13 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
             wav = speech_file()
             asleep = time.monotonic() - _last_audio_end > OUTPUT_SLEEPS_AFTER_S
             synthesise(sentence, wav, stretch,
-                       LEAD_IN_ASLEEP_S if asleep else LEAD_IN_AWAKE_S)
+                       LEAD_IN_ASLEEP_S if asleep else LEAD_IN_AWAKE_S,
+                       language)
             with wave.open(str(wav)) as audio:
                 seconds = audio.getnframes() / audio.getframerate()
             timings = []
             if on_start:
-                timings = word_timings(sentence, wav)
+                timings = word_timings(sentence, wav, language)
             with _speech_lock:
                 if turn != _speech_turn:
                     return
@@ -1077,13 +1230,21 @@ def speak_french(sentence, speed=DEFAULT_SPEECH_SPEED, on_start=None):
     return turn
 
 
+def stop_speech():
+    """Stop whatever is being read aloud and cancel anything pending."""
+    global _speech_turn
+    with _speech_lock:
+        _speech_turn += 1
+        _stop_playback()
+
+
 def current_speech_turn():
     return _speech_turn
 
 
-def cache_path(url=None):
-    """Today's cache file for the news (url None) or for a web page."""
-    name = datetime.date.today().isoformat()
+def cache_path(url=None, language=DEFAULT_LANGUAGE):
+    """Today's cache file for the news (url None) or a web page, per language."""
+    name = f"{datetime.date.today().isoformat()}-{language}"
     if url:
         name += "-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
     return CACHE_DIR / f"{name}.json"
@@ -1096,13 +1257,14 @@ def load_stories(settings, url=None, force=False):
     The result (and cache file) is a dict
     {"ai": label, "title": source name, "stories": [[pair, ...], ...]}.
     """
-    path = cache_path(url)
+    language = settings["language"]
+    path = cache_path(url, language)
     if not force and path.exists():
         try:
             cached = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(cached, list):  # cache written before Settings existed
                 cached = {"ai": "claude:sonnet", "stories": cached}
-            cached["stories"][0][0]["fr"]  # raises if the format is old
+            cached["stories"][0][0]["tl"]  # raises if the format is old
             return cached
         except (OSError, json.JSONDecodeError, LookupError, TypeError):
             pass  # unreadable or older cache: fall through and rebuild it
@@ -1111,9 +1273,10 @@ def load_stories(settings, url=None, force=False):
         result = {"title": page["title"],
                   "stories": summarise_page(page, settings)}
     else:
-        result = {"title": FEED_NAME,
-                  "stories": summarise_news(fetch_feed(), settings)}
+        result = {"title": LANGUAGES[language]["feed_name"],
+                  "stories": summarise_news(fetch_feed(language), settings)}
     result["ai"] = ai_label(settings)
+    result["language"] = language
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1156,12 +1319,28 @@ class NewsReader:
         # Packed after the buttons so a long status line cannot squeeze them.
         self.status.pack(side="left", fill="x", expand=True)
         self.settings = load_settings()
+        # The language of the stories on screen (it can differ from the
+        # picker while a newly chosen language is being fetched).
+        self.shown_language = self.settings["language"]
+        self.voice_downloads = {}  # language -> progress text or error
         self.url = None  # None = the news feed; otherwise a web page address
         self.busy = False  # True while a fetch is running
 
         # Source row: read any web page instead of the news.
         source = tk.Frame(root, bg=BG)
         source.pack(fill="x", padx=16, pady=(6, 0))
+        # Which language to read, at the far left of the row.
+        self.language_codes = {info["native"]: code
+                               for code, info in LANGUAGES.items()}
+        self.language_name = tk.StringVar(
+            value=LANGUAGES[self.settings["language"]]["native"])
+        tk.Label(source, text="Language:", bg=BG, fg=MUTED,
+                 font=self.label_font).pack(side="left")
+        self.language_box = ttk.Combobox(
+            source, textvariable=self.language_name, width=9,
+            state="readonly", values=list(self.language_codes))
+        self.language_box.pack(side="left", padx=(6, 16))
+        self.language_box.bind("<<ComboboxSelected>>", self.on_language_change)
         tk.Label(source, text="Web page:", bg=BG, fg=MUTED,
                  font=self.label_font).pack(side="left")
         # Speech speed, at the far right of the row.
@@ -1174,8 +1353,7 @@ class NewsReader:
         speed_box.bind("<<ComboboxSelected>>", self.on_speed_change)
         tk.Label(source, text="Speech speed:", bg=BG, fg=MUTED,
                  font=self.label_font).pack(side="right", padx=(16, 6))
-        self.news_btn = tk.Button(source, text=f"Back to {FEED_NAME} news",
-                                  relief="flat", command=self.show_news)
+        self.news_btn = tk.Button(source, relief="flat", command=self.show_news)
         self.news_btn.pack(side="right")
         self.page_btn = tk.Button(source, text="Read this page", relief="flat",
                                   command=self.show_page)
@@ -1193,17 +1371,25 @@ class NewsReader:
         panes.columnconfigure(1, weight=1, uniform="pane")
         panes.rowconfigure(0, weight=1)
         self.panels = {
-            "fr": self._make_panel(panes, 0, "FRANÇAIS"),
+            "tl": self._make_panel(panes, 0, ""),
             "en": self._make_panel(panes, 1, "ENGLISH"),
         }
+        # Right-click a word in the language being learned to hear it.
+        right_clicks = (["<Button-2>", "<Control-Button-1>"]
+                        if sys.platform == "darwin" else ["<Button-3>"])
+        for sequence in right_clicks:
+            self.panels["tl"].bind(sequence, self.on_speak_word)
         self.active = None  # tag name of the highlighted sentence
         self.active_word = None  # (panel, sentence tag, word number)
-        self.french = {}  # sentence tag -> French sentence, for speaking
-        # sentence tag -> (where the sentence starts in the French panel,
+        self.foreign = {}  # sentence tag -> sentence being learned, to speak
+        # sentence tag -> (where the sentence starts in the left panel,
         #                  [(char start, char end, link), ...] of its words)
-        self.french_layout = {}
+        self.foreign_layout = {}
         # panel -> sentence tag -> [(start index, end index, pos, link), ...]
         self.words = {text: {} for text in self.panels.values()}
+        self._update_language_labels()
+        if piper_ready() and voice_model(self.settings["language"]) is None:
+            self.start_voice_download(self.settings["language"])
         if self.settings["provider"]:
             self.load()
         else:  # first launch: nothing can load until an AI is chosen
@@ -1284,19 +1470,24 @@ class NewsReader:
         key = self.key = tk.Frame(root, bg=BG)
         key.pack(side="bottom", fill="x", padx=24, pady=(0, 10))
         columns = 5
-        for i, (label, colour) in enumerate(PARTS_OF_SPEECH.values()):
+        self.key_labels = {}  # tag -> label, renamed when the language changes
+        for i, (tag, (_, colour)) in enumerate(PARTS_OF_SPEECH.items()):
             cell = tk.Frame(key, bg=BG)
             cell.grid(row=i // columns, column=i % columns, sticky="w",
                       padx=(0, 22), pady=2)
             tk.Label(cell, bg=colour, width=2).pack(side="left")
-            tk.Label(cell, text=label, bg=BG, fg=FG,
-                     font=self.key_font).pack(side="left", padx=(6, 0))
+            self.key_labels[tag] = tk.Label(cell, bg=BG, fg=FG,
+                                            font=self.key_font)
+            self.key_labels[tag].pack(side="left", padx=(6, 0))
 
     def _make_panel(self, parent, column, label):
         frame = tk.Frame(parent, bg=BG)
         frame.grid(row=0, column=column, sticky="nsew", padx=8)
-        tk.Label(frame, text=label, bg=BG, fg=MUTED, font=self.label_font,
-                 anchor="w").pack(fill="x", padx=14)
+        title = tk.Label(frame, text=label, bg=BG, fg=MUTED,
+                         font=self.label_font, anchor="w")
+        title.pack(fill="x", padx=14)
+        if column == 0:
+            self.left_title = title  # shows the language, and voice news
         scroll = tk.Scrollbar(frame)
         scroll.pack(side="right", fill="y")
         text = tk.Text(frame, wrap="word", bg=BG, fg=FG, font=self.body_font,
@@ -1358,6 +1549,7 @@ class NewsReader:
         # while a fetch is running.
         for widget in (self.refresh_btn, self.page_btn):
             widget.config(state=state)
+        self.language_box.config(state="disabled" if busy else "readonly")
         # "Back to news" is only useful while a web page is the source.
         self.news_btn.config(
             state="disabled" if busy or self.url is None else "normal")
@@ -1394,7 +1586,9 @@ class NewsReader:
             self.status.config(text="Could not load: " + error)
             return
         stories = result["stories"]
+        self.shown_language = result.get("language", self.settings["language"])
         self.render(stories)
+        self._update_language_labels()
         has_words = any(self.words[text] and any(self.words[text].values())
                         for text in self.panels.values())
         # The colour key only makes sense when the AI supplied word detail.
@@ -1404,14 +1598,16 @@ class NewsReader:
         elif not has_words:
             self.key.pack_forget()
         hints = "hover a sentence or word" if has_words else "hover a sentence"
-        title = result.get("title", FEED_NAME)
+        title = result.get("title", "")
         if len(title) > 40:
             title = title[:39].rstrip() + "\u2026"
-        unit = "sections" if self.url else "stories"
+        unit = ("section" if self.url else "story") if len(stories) == 1 \
+            else ("sections" if self.url else "stories")
         self.status.config(
             text=f"{title} · {datetime.date.today():%d %B %Y} · "
                  f"{len(stories)} {unit} by {result.get('ai', '?')} · "
-                 f"{hints} for its translation · {SPEAK_GLYPH} speaks the French")
+                 f"{hints} for its translation · {SPEAK_GLYPH} or right-click "
+                 f"to hear the {LANGUAGES[self.shown_language]['name']}")
 
     # -- settings
 
@@ -1466,7 +1662,9 @@ class NewsReader:
             return label
 
         text(f"Welcome to {APP_NAME}", font=self.head_font)
-        text("This app uses an AI service to write the French summaries and "
+        text("This app uses an AI service to write the summaries in the "
+             "language you are learning, and their English translations. "
+             "(French and Spanish so far.) "
              "their English translations. You need your own key for one of "
              "these services. The service bills you for what you use; a "
              "day's news typically costs a few cents.")
@@ -1723,8 +1921,8 @@ class NewsReader:
     def render(self, stories):
         self.active = None
         self.active_word = None
-        self.french = {}
-        self.french_layout = {}
+        self.foreign = {}
+        self.foreign_layout = {}
         for lang, text in self.panels.items():
             text.config(state="normal")
             text.delete("1.0", "end")
@@ -1736,8 +1934,8 @@ class NewsReader:
                     sid += 1
                     if i == 0:
                         text.insert("end", f"{n}. ", ("headline", "number"))
-                    if lang == "fr":
-                        self.french[tag] = pair["fr"]
+                    if lang == "tl":
+                        self.foreign[tag] = pair["tl"]
                         style = ("headline",) if i == 0 else ()
                         text.insert("end", SPEAK_GLYPH, style + ("speak", tag))
                         text.insert("end", " ", style + (tag,))
@@ -1747,8 +1945,8 @@ class NewsReader:
                     self.words[text][tag] = [
                         (f"{start}+{a}c", f"{start}+{b}c", pos, link)
                         for a, b, pos, link in located]
-                    if lang == "fr":
-                        self.french_layout[tag] = (
+                    if lang == "tl":
+                        self.foreign_layout[tag] = (
                             start, [(a, b, link) for a, b, _, link in located])
                     if i == 0:
                         text.insert("end", pair[lang], ("headline", tag))
@@ -1795,22 +1993,169 @@ class NewsReader:
         if self.settings["provider"]:  # nothing to save before first setup
             save_settings(self.settings)
 
+    def on_language_change(self, event=None):
+        """Switch the language being learned and load its news (or the web
+        page on screen) in that language."""
+        event.widget.selection_clear()
+        code = self.language_codes[self.language_name.get()]
+        if code == self.settings["language"]:
+            return
+        self.settings["language"] = code
+        if self.settings["provider"]:  # nothing to save before first setup
+            save_settings(self.settings)
+        stop_speech()
+        self.clear_spoken()
+        if piper_ready() and voice_model(code) is None:
+            self.start_voice_download(code)
+        self._update_language_labels()
+        if self.settings["provider"]:
+            self.load()
+
+    def _update_language_labels(self):
+        """Text that names the language: panel title, colour key, button."""
+        shown = LANGUAGES[self.shown_language]
+        for tag, label in self.key_labels.items():
+            label.config(text=f"{PARTS_OF_SPEECH[tag][0]} \u00b7 "
+                              f"{shown['pos_names'][tag]}")
+        title = shown["panel"]
+        note = self.voice_downloads.get(self.shown_language)
+        if note:
+            title += "  \u00b7  " + note
+        self.left_title.config(text=title)
+        selected = LANGUAGES[self.settings["language"]]
+        self.news_btn.config(text=f"Back to {selected['feed_name']} news")
+
+    def ready_to_speak(self):
+        """True if the language on screen can be spoken now; otherwise
+        starts or reports the voice download."""
+        language = self.shown_language
+        if piper_available(language):
+            return True
+        if piper_ready() and voice_model(language) is None:
+            self.start_voice_download(language)  # retries after a failure
+            return False
+        if shutil.which("spd-say"):
+            return True  # the system voice, on Linux without Piper
+        self.status.config(
+            text=f"Cannot speak: the {LANGUAGES[language]['name']} voice is "
+                 "not installed (see the README).")
+        return False
+
+    def start_voice_download(self, language):
+        """Fetch a language's voice in the background, showing progress in
+        the panel title. Reading works meanwhile; only speech waits."""
+        note = self.voice_downloads.get(language)
+        if note and not note.startswith("voice download failed"):
+            return  # already downloading
+        name = LANGUAGES[language]["name"]
+        self.voice_downloads[language] = f"downloading {name} voice\u2026"
+        self._update_language_labels()
+        last = {"percent": -1}
+
+        def progress(done, total):
+            percent = done * 100 // total
+            if percent != last["percent"]:
+                last["percent"] = percent
+                self._after(self._voice_progress, language,
+                            f"downloading {name} voice\u2026 {percent}%")
+
+        def work():
+            try:
+                download_voice(language, progress)
+                error = None
+            except Exception as exc:  # shown in the panel title
+                error = str(exc)
+            self._after(self._voice_done, language, error)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after(self, function, *args):
+        """Run a function on Tk's thread, from a worker thread."""
+        try:
+            self.root.after(0, function, *args)
+        except (RuntimeError, tk.TclError):
+            pass  # the window was closed
+
+    def _voice_progress(self, language, note):
+        if language in self.voice_downloads:
+            self.voice_downloads[language] = note
+            self._update_language_labels()
+
+    def _voice_done(self, language, error):
+        if error:
+            self.voice_downloads[language] = (
+                "voice download failed \u2014 click \u25ba to try again")
+            self.status.config(text=error)
+        else:
+            self.voice_downloads.pop(language, None)
+        self._update_language_labels()
+
+    def on_speak_word(self, event):
+        """Speak the single word under the pointer, in the left panel."""
+        text = event.widget
+        tag, _ = self.sentence_at(text, event.x, event.y)
+        if tag not in self.foreign_layout:
+            return "break"
+        start, _ = self.foreign_layout[tag]
+        index = text.index(f"@{event.x},{event.y}")
+        if text.compare(index, "<", start):
+            return "break"  # on the \u25ba button, not on a word
+        sentence = self.foreign[tag]
+        at = len(text.get(start, index))
+        if at >= len(sentence) or sentence[at].isspace():
+            return "break"
+        # The whole run of text between spaces, so "l\u2019humeur" is heard
+        # as the reader sees it; punctuation around it is left out.
+        a = at
+        while a > 0 and not sentence[a - 1].isspace():
+            a -= 1
+        b = at
+        while b < len(sentence) and not sentence[b].isspace():
+            b += 1
+        while a < b and not sentence[a].isalnum():
+            a += 1
+        while b > a and not sentence[b - 1].isalnum():
+            b -= 1
+        if a == b:
+            return "break"
+        if not self.ready_to_speak():
+            return "break"
+        self.clear_spoken()
+        speak_aloud(
+            sentence[a:b], self.shown_language, self.speed.get(),
+            on_start=lambda turn, timings, started: self.root.after(
+                0, self.show_spoken_word, turn, tag, a, b, timings, started))
+        return "break"
+
+    def show_spoken_word(self, turn, tag, a, b, timings, started):
+        """Highlight a word spoken on its own, and its translation."""
+        layout = self.foreign_layout.get(tag)
+        if layout is None or turn != current_speech_turn():
+            return
+        self.mark_spoken(tag, layout, self.foreign[tag], a, b)
+        heard_until = (timings[-1][1] if timings else 1.0) + PLAYER_LATENCY_S
+        wait_ms = int(max(0.3, heard_until - (time.monotonic() - started))
+                      * 1000) + 250
+
+        def clear():
+            if turn == current_speech_turn():
+                self.clear_spoken()
+
+        self.root.after(wait_ms, clear)
+
     def on_speak(self, text, event):
-        """Speak the French sentence whose play button was clicked."""
+        """Speak the sentence whose play button was clicked."""
         for tag in text.tag_names(f"@{event.x},{event.y}"):
-            if tag in self.french:
-                if speech_available():
+            if tag in self.foreign:
+                if self.ready_to_speak():
                     self.clear_spoken()
-                    speak_french(
-                        self.french[tag], self.speed.get(),
+                    speak_aloud(
+                        self.foreign[tag], self.shown_language,
+                        self.speed.get(),
                         # Called from the speech thread: hand over to Tk's.
                         on_start=lambda turn, timings, started, tag=tag:
                         self.root.after(0, self.follow_speech, turn, tag,
                                         timings, started))
-                else:
-                    self.status.config(
-                        text="Cannot speak: the French voice is not installed "
-                             "(see the README).")
                 return
 
     def clear_spoken(self):
@@ -1819,16 +2164,16 @@ class NewsReader:
 
     def follow_speech(self, turn, tag, timings, started):
         """Mark each word, and its translation, while it is being spoken."""
-        layout = self.french_layout.get(tag)
+        layout = self.foreign_layout.get(tag)
         if layout is None or not timings:
             return
-        sentence = self.french[tag]
+        sentence = self.foreign[tag]
         shown = None
 
         def tick():
             nonlocal shown
             if (turn != current_speech_turn()
-                    or self.french_layout.get(tag) is not layout):
+                    or self.foreign_layout.get(tag) is not layout):
                 self.clear_spoken()  # another sentence, or the page changed
                 return
             elapsed = time.monotonic() - started - PLAYER_LATENCY_S
@@ -1845,9 +2190,9 @@ class NewsReader:
         tick()
 
     def mark_spoken(self, tag, layout, sentence, a, b):
-        """Highlight characters a..b of a French sentence and their English."""
+        """Highlight characters a..b of a sentence and their English."""
         start, words = layout
-        french, english = self.panels["fr"], self.panels["en"]
+        foreign, english = self.panels["tl"], self.panels["en"]
         self.clear_spoken()
         # Which tagged words the spoken one covers ("l\u2019\u00e9lection" is two).
         links = {link for wa, wb, link in words if link and wa < b and wb > a}
@@ -1856,8 +2201,8 @@ class NewsReader:
             a += 1
         while b > a and not sentence[b - 1].isalnum():
             b -= 1
-        french.tag_add("spoken", f"{start}+{a}c", f"{start}+{b}c")
-        french.see(f"{start}+{a}c")
+        foreign.tag_add("spoken", f"{start}+{a}c", f"{start}+{b}c")
+        foreign.see(f"{start}+{a}c")
         for begin, end, _, link in self.words[english].get(tag, ()):
             if link in links:
                 english.tag_add("spoken", begin, end)
@@ -1929,8 +2274,22 @@ def self_test(report_path=None):
         reply = ('[{"sentences": [{"fr": "Le chat dort.", "en": "The cat '
                  'sleeps.", "fr_pos": "Le/DET/1 chat/NOUN/2 dort/VERB/3", '
                  '"en_pos": "The/DET/1 cat/NOUN/2 sleeps/VERB/3"}]}]')
-        pair = parse_stories(reply)[0][0]
-        assert len(list(locate_words(pair["fr"], pair["fr_pos"]))) == 3
+        pair = parse_stories(reply, "fr")[0][0]
+        assert len(list(locate_words(pair["tl"], pair["tl_pos"]))) == 3
+
+    def languages():
+        """Every language is fully described and its prompt builds."""
+        for code, info in LANGUAGES.items():
+            assert set(info["pos_names"]) == set(PARTS_OF_SPEECH), code
+            assert info["feed_url"].startswith("https://"), code
+            hashes = info["voice_sha256"]
+            assert set(hashes) == {".onnx", ".onnx.json"}, code
+            assert all(re.fullmatch(r"[0-9a-f]{64}", h)
+                       for h in hashes.values()), code
+            for detail in (True, False):
+                prompt = build_prompt("task", "count", "content", code, detail)
+                assert f'"{code}":' in prompt and info["name"] in prompt
+        return ", ".join(info["name"] for info in LANGUAGES.values())
 
     def page_text():
         page = _PageText()
@@ -1957,10 +2316,14 @@ def self_test(report_path=None):
         assert not FROZEN or SSL_CONTEXT is not None, "certifi is missing"
 
     check("parse an AI reply", parsing)
+    check("languages", languages)
     check("extract web page text", page_text)
     check("window toolkit", lambda: f"Tk {tk.Tcl().eval('info patchlevel')}")
     check("HTTPS certificates", https)
     check("Anthropic library", anthropic_sdk)
+    check("voice engine (Piper)", lambda: "found" if importlib.util.find_spec(
+        "piper") is not None else (_ for _ in ()).throw(
+            RuntimeError("piper is not available")))
     check("voice model present", lambda: voice_model().name)
     check("French speech", voice)
     report = "\n".join([f"{APP_NAME} {VERSION} self-test", *lines,

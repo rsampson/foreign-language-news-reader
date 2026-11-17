@@ -1,10 +1,10 @@
 # Foreign Language News Reader
 
-Learn a language by reading the day's news. French is the only language so
-far; the name leaves room for more. The app shows the top 10 stories from
-Le Monde as short summaries, French on the left and English on the right, and
-links the two languages sentence by sentence and word by word. Any other web
-page can be read the same way.
+Learn French or Spanish by reading the day's news. The app shows the top 10
+stories from Le Monde (French) or El País (Spanish) as short summaries, the
+language you are learning on the left and English on the right, and links the
+two languages sentence by sentence and word by word. Any other web page can be
+read the same way.
 
 ![The app with a sentence highlighted in both languages, its words coloured by part of speech, and one matching word pair marked](screenshot.png)
 
@@ -53,7 +53,7 @@ python3 -m venv .venv
 
 On Windows use `.venv\Scripts\python` in place of `.venv/bin/python`. The
 packages are optional: without them the app still runs with plain `python3
-news_reader.py`, minus the French voice and the Claude API-key option.
+news_reader.py`, minus the voices and the Claude API-key option.
 `python news_reader.py --self-test` checks that everything is in place.
 
 The first launch of the day fetches and summarises the news, which takes a few
@@ -63,26 +63,34 @@ minutes. After that the day's stories are saved, so reopening is instant.
 
 | Do this | What happens |
 |---|---|
+| Choose a **Language** | Français or Español, at the top left. The app fetches that language's news (or the web page on screen) and remembers the choice. |
 | Move the mouse over a sentence | That sentence and its translation in the other panel are highlighted. The other panel scrolls if needed. |
 | Look at the highlighted sentence | Each word is coloured by its part of speech. The key at the bottom of the window explains the colours. |
 | Move the mouse over a word | The word and the word or words that translate it turn into dark boxes. A word with no counterpart highlights on its own side only. |
-| Click the red ► before a French sentence | The sentence is read aloud in French. Clicking another ► interrupts it. |
+| Click the red ► before a sentence | The sentence is read aloud in French or Spanish. Clicking another ► interrupts it. |
+| Right-click a word in the left panel | Just that word is read aloud, and it and its translation are highlighted. On a Mac, Control-click works too. |
 | Listen to a sentence | Each word is highlighted in orange and underlined as it is spoken, together with its translation in the other panel. The timing is estimated from the recording, so it can be a syllable early or late. |
 | Choose a **Speech speed** | Sets how fast sentences are read aloud: Normal, Slow (the default), Slower or Very slow. The choice is remembered. |
 | Click **Refresh** | The news, or the web page on screen, is fetched again, replacing today's saved copy. |
 
 Everything works from either panel: you can hover the English to find the
-French, or the other way round.
+French or Spanish, or the other way round.
+
+**The Spanish voice downloads the first time you choose Spanish** (about
+60 MB, once). Progress shows next to **ESPAÑOL** above the left panel; you can
+read while it downloads, and the ► buttons work as soon as it finishes. The
+download is checked against a fixed checksum before it is used. The French
+voice is built in.
 
 ## Reading any web page
 
 The app opens on the news. To read something else, paste a web address into
 the **Web page** box and press Enter or click **Read this page**. Click
-**Back to Le Monde news** to return to the news.
+**Back to Le Monde news** (or **El País**) to return to the news.
 
 - The page can be in any language. The AI divides it into up to 10 sections,
-  each with a French headline, a short French summary and its English
-  translation.
+  each with a headline and a short summary in the language you chose, plus
+  their English translation.
 - It is a summary, not the whole page: only the first 12,000 characters of the
   page's readable text are used, so long pages are covered from the top.
 - Clutter is filtered out before the AI sees the page: menus, headers and
@@ -179,8 +187,8 @@ user account.
 
 ## Things to know
 
-- Summaries are written from Le Monde's headline and short blurb only, not the
-  full article, so they are brief.
+- Summaries are written from each story's headline and short blurb in the
+  news feed only, not the full article, so they are brief.
 - The translations, part-of-speech tags and word matches come from the AI. They
   are usually right, but an occasional one will be debatable.
 - Speech takes about a second to start, because the audio is generated when you
@@ -192,9 +200,9 @@ user account.
 |---|---|
 | `news_reader.py` | The whole app. |
 | `settings.json` | Your AI choice, created when you first save Settings. |
-| `cache/` | Saved stories: one file per day for the news and one per web page per day. Safe to delete. |
-| `.venv/` | Piper, the program that produces the French voice. |
-| `voices/` | The French voice model (`fr_FR-siwis-medium`, about 63 MB). |
+| `cache/` | Saved stories: one file per language per day for the news, and one per web page. Safe to delete. |
+| `.venv/` | Piper, the program that produces the voices. |
+| `voices/` | The voice models: French (`fr_FR-siwis-medium`) and, once downloaded, Spanish (`es_ES-davefx-medium`), about 63 MB each. |
 
 In the downloaded app, settings and the cache live in your user data folder
 instead (`%APPDATA%\foreign-language-news-reader`, `~/Library/Application
@@ -204,12 +212,13 @@ Support/foreign-language-news-reader` or `~/.local/share/foreign-language-news-r
 
 The constants at the top of `news_reader.py` control:
 
-- `FEED_URL` and `FEED_NAME`: the news source (any RSS feed in French).
+- `LANGUAGES`: each language's news feed, voice (with its checksums),
+  colour-key labels and grammar notes for the AI. Adding a language means
+  adding an entry here.
 - `ITEM_COUNT`: how many stories to show, and the most sections made from a
   web page.
 - `MAX_PAGE_CHARS`: how much of a web page's text is given to the AI.
-- `PIPER_VOICE` and `SPEECH_SPEEDS`: the voice, and the speeds offered in the
-  **Speech speed** box.
+- `SPEECH_SPEEDS`: the speeds offered in the **Speech speed** box.
 - `PARTS_OF_SPEECH`: the colours and labels in the key.
 
 ## Licence and credits
@@ -217,5 +226,7 @@ The constants at the top of `news_reader.py` control:
 Foreign Language News Reader is free software under the [GNU GPL v3](LICENSE), with no
 warranty. The downloadable apps include [Piper](https://github.com/OHF-voice/piper1-gpl)
 (GPL-3.0) and the `fr_FR-siwis-medium` voice, trained on the SIWIS French
-speech dataset (CC BY 4.0). News summaries are generated from Le Monde's
-public RSS feed; this project is not affiliated with Le Monde.
+speech dataset (CC BY 4.0). The Spanish voice, `es_ES-davefx-medium`
+(CC0), is downloaded from the [Piper voices](https://huggingface.co/rhasspy/piper-voices)
+collection when first needed. News summaries are generated from the public RSS
+feeds of Le Monde and El País; this project is not affiliated with either.
