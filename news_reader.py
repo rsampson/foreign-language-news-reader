@@ -445,29 +445,70 @@ def ai_label(settings):
     return f"{provider}:{settings[provider + '_model']}"
 
 
+# AI programs started by the app (the claude command-line tool). They are
+# separate processes, so they would keep running, and keep using the user's
+# allowance, after the window closed unless they are stopped explicitly.
+_ai_processes = set()
+_ai_lock = threading.Lock()
+_shutting_down = False
+
+
+def stop_ai_processes():
+    """Stop every AI program the app started; called when the app closes."""
+    global _shutting_down
+    _shutting_down = True
+    with _ai_lock:
+        running = [proc for proc in _ai_processes if proc.poll() is None]
+    for proc in running:
+        proc.terminate()
+    for proc in running:
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+atexit.register(stop_ai_processes)
+
+
 def ask_claude(prompt, settings):
+    if _shutting_down:
+        raise RuntimeError("The app is closing.")
     try:
         # Run from an empty directory so no project instructions are loaded.
         with tempfile.TemporaryDirectory() as cwd:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 # No tools: the text being summarised comes from the web.
                 ["claude", "-p", "--model", settings["claude_model"],
                  "--tools", ""],
-                input=prompt, capture_output=True, text=True,
-                timeout=AI_TIMEOUT_S, cwd=cwd,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, cwd=cwd,
+                # Explicit UTF-8: Windows would otherwise garble accents.
+                text=True, encoding="utf-8", errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            with _ai_lock:
+                _ai_processes.add(proc)
+            try:
+                stdout, stderr = proc.communicate(prompt, timeout=AI_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise RuntimeError("claude took too long to respond.")
+            finally:
+                with _ai_lock:
+                    _ai_processes.discard(proc)
     except FileNotFoundError:
         raise RuntimeError("The 'claude' command was not found on PATH.")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("claude took too long to respond.")
+    if _shutting_down:
+        raise RuntimeError("The app is closing.")
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip()
+        detail = (stderr or stdout).strip()
         if re.search(r"authenticat|oauth|log ?in|credential|401", detail, re.I):
             raise RuntimeError(
                 "Claude Code is signed out. Open a terminal, run "
                 "\"claude auth login\", sign in, then click Refresh.")
         raise RuntimeError("claude failed: " + detail[:400])
-    return proc.stdout
+    return stdout
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1222,7 +1263,16 @@ class NewsReader:
             result = load_stories(settings, url, force), None
         except Exception as exc:  # shown to the user in the status bar
             result = None, str(exc)
-        self.root.after(0, self._load_done, *result)
+        try:
+            self.root.after(0, self._load_done, *result)
+        except (RuntimeError, tk.TclError):
+            pass  # the window was closed while the news was being fetched
+
+    def on_close(self):
+        """Closing the window also stops a fetch or speech in progress."""
+        stop_ai_processes()
+        _stop_playback()
+        self.root.destroy()
 
     def _load_done(self, result, error):
         self._set_busy(False)
@@ -1730,7 +1780,16 @@ def main():
             print(f"{APP_NAME} {VERSION}")
         return
     root = tk.Tk(className=APP_ID)
-    NewsReader(root)
+    app = NewsReader(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
+    if sys.platform != "win32":
+        import signal
+        # Logging out or "kill" sends SIGTERM; stop the AI program first.
+        signal.signal(signal.SIGTERM, lambda *_: root.after(0, app.on_close))
+        # Let Python see the signal while Tk is waiting for events.
+        def heartbeat():
+            root.after(250, heartbeat)
+        heartbeat()
     root.mainloop()
 
 
