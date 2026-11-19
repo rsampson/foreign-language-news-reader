@@ -843,6 +843,36 @@ def build_prompt(task, count, content, language, detail):
         example=example)
 
 
+TRANSLATE_PROMPT = """\
+Translate the English text below into natural, everyday {lang}, as a native
+speaker would say it. Keep the meaning and the tone. Reply with ONLY the
+{lang} translation: no notes, no quotation marks, no explanations.
+
+English text:
+{text}
+"""
+MAX_TRANSLATE_CHARS = 2000
+
+
+def translate_text(text, language, settings):
+    """Translate the user's own English text into a language being learned."""
+    text = text.strip()
+    if not text:
+        raise RuntimeError("Type something in English first.")
+    if len(text) > MAX_TRANSLATE_CHARS:
+        raise RuntimeError(f"That is too long: please keep it under "
+                           f"{MAX_TRANSLATE_CHARS} characters.")
+    if settings["provider"] not in ASK:
+        raise RuntimeError("No AI has been chosen yet. Open Settings.")
+    reply = ASK[settings["provider"]](
+        TRANSLATE_PROMPT.format(lang=LANGUAGES[language]["name"], text=text),
+        settings).strip()
+    reply = re.sub(r"^```\w*\n?|\n?```$", "", reply).strip()  # stray fences
+    if not reply:
+        raise RuntimeError("The AI returned an empty translation.")
+    return reply
+
+
 def summarise(task, count, content, settings):
     """Ask the configured AI for paired sentences: the language being
     learned and English."""
@@ -1316,6 +1346,9 @@ class NewsReader:
         self.refresh_btn.pack(side="right")
         tk.Button(bar, text="Settings", relief="flat",
                   command=self.open_settings).pack(side="right", padx=(0, 6))
+        tk.Button(bar, text="Translate\u2026", relief="flat",
+                  command=self.open_translator).pack(side="right", padx=(0, 6))
+        self.translator = None  # the Translate window, while it is open
         # Packed after the buttons so a long status line cannot squeeze them.
         self.status.pack(side="left", fill="x", expand=True)
         self.settings = load_settings()
@@ -1325,6 +1358,10 @@ class NewsReader:
         self.voice_downloads = {}  # language -> progress text or error
         self.url = None  # None = the news feed; otherwise a web page address
         self.busy = False  # True while a fetch is running
+        self.fetch_started = 0.0  # time.monotonic() when it began
+        self.fetch_number = 0     # tells a stale timer from the current one
+        self.waiting_shown = False  # the "fetching" note is in the panel
+        self.shown_source = None  # (language, url) of the stories on screen
 
         # Source row: read any web page instead of the news.
         source = tk.Frame(root, bg=BG)
@@ -1499,6 +1536,10 @@ class NewsReader:
         text.tag_configure("headline", font=self.head_font, spacing1=18,
                            spacing3=6)
         text.tag_configure("number", foreground=MUTED)
+        text.tag_configure("waiting", font=self.head_font, foreground=MUTED,
+                           spacing1=18, lmargin1=4, lmargin2=4)
+        text.tag_configure("waiting_note", foreground=MUTED, lmargin1=4,
+                           lmargin2=4)
         text.tag_configure("hl", background=HIGHLIGHT)
         text.tag_raise("hl")
         for pos, (_, colour) in PARTS_OF_SPEECH.items():
@@ -1556,13 +1597,52 @@ class NewsReader:
 
     def load(self, force=False):
         self._set_busy(True)
-        what = self.url or "today's news"
-        self.status.config(
-            text=f"Fetching and summarising {what} with "
-                 f"{ai_label(self.settings)} — this takes a few minutes…")
+        source = (self.settings["language"], self.url)
+        # A Refresh keeps the stories on screen until the new ones arrive;
+        # anything else (first load, other language or page) clears them, so
+        # old stories are never mistaken for the ones being fetched.
+        if not (force and source == self.shown_source):
+            self.show_waiting()
+        self.fetch_started = time.monotonic()
+        self.fetch_number += 1
+        self._tick_fetch(self.fetch_number)
         threading.Thread(target=self._load_worker,
                          args=(dict(self.settings), self.url, force),
                          daemon=True).start()
+
+    def _fetch_message(self):
+        """What is being fetched, with the time so far."""
+        elapsed = int(time.monotonic() - self.fetch_started)
+        info = LANGUAGES[self.settings["language"]]
+        what = self.url or f"today's {info['feed_name']} news"
+        return (f"Fetching {what} and asking {ai_label(self.settings)} to "
+                f"summarise it \u2014 {elapsed // 60}:{elapsed % 60:02d} so far")
+
+    def _tick_fetch(self, number):
+        """Update the fetch message every second while the fetch runs."""
+        if not self.busy or number != self.fetch_number:
+            return
+        message = self._fetch_message()
+        self.status.config(text=message + "\u2026")
+        if self.waiting_shown:
+            self.panels["tl"].config(state="normal")
+            self.panels["tl"].delete("waiting.first", "waiting.last")
+            self.panels["tl"].insert("1.0", message + ".", ("waiting",))
+            self.panels["tl"].config(state="disabled")
+        self.root.after(1000, self._tick_fetch, number)
+
+    def show_waiting(self):
+        """Replace the panels with a note saying the stories are coming."""
+        self.render([])
+        foreign = self.panels["tl"]
+        foreign.config(state="normal")
+        foreign.insert("end", "Starting\u2026", ("waiting",))
+        foreign.insert("end", "\n\nThe first time each day this usually "
+                       "takes two to three minutes, sometimes longer. The "
+                       "stories are then saved, so opening the app again "
+                       "today is instant.", ("waiting_note",))
+        foreign.config(state="disabled")
+        self.waiting_shown = True
 
     def _load_worker(self, settings, url, force):
         try:
@@ -1584,7 +1664,18 @@ class NewsReader:
         self._set_busy(False)
         if error:
             self.status.config(text="Could not load: " + error)
+            if self.waiting_shown:
+                self.render([])
+                foreign = self.panels["tl"]
+                foreign.config(state="normal")
+                foreign.insert("end", "The stories could not be loaded. The "
+                               "reason is shown at the top of the window. "
+                               "Click Refresh to try again.", ("waiting",))
+                foreign.config(state="disabled")
             return
+        self.waiting_shown = False
+        self.shown_source = (result.get("language", self.settings["language"]),
+                             self.url)
         stories = result["stories"]
         self.shown_language = result.get("language", self.settings["language"])
         self.render(stories)
@@ -1818,6 +1909,180 @@ class NewsReader:
         check.config(command=lambda: (status.config(text="Checking\u2026",
                                                     fg=MUTED), refresh()))
         refresh()
+
+    def open_translator(self):
+        """A window for translating your own English into the language
+        being learned, with a button to hear the result."""
+        if self.translator is not None and self.translator.winfo_exists():
+            self.translator.deiconify()
+            self.translator.lift()
+            return
+        win = self.translator = tk.Toplevel(self.root, bg=BG, padx=18,
+                                            pady=14)
+        win.title("Translate")
+        win.geometry("620x520")
+        win.minsize(420, 380)
+
+        def heading(text, pady=(0, 4)):
+            label = tk.Label(win, text=text, bg=BG, fg=MUTED,
+                             font=self.label_font, anchor="w")
+            label.pack(fill="x", pady=pady)
+            return label
+
+        def text_box(height, editable):
+            frame = tk.Frame(win, bg=BG)
+            frame.pack(fill="both", expand=True)
+            scroll = tk.Scrollbar(frame)
+            scroll.pack(side="right", fill="y")
+            box = tk.Text(frame, height=height, wrap="word", undo=editable,
+                          font=self.body_font, bg="#ffffff" if editable
+                          else BG, fg=FG, relief="solid", borderwidth=1,
+                          highlightthickness=0, padx=8, pady=6,
+                          yscrollcommand=scroll.set)
+            box.pack(side="left", fill="both", expand=True)
+            scroll.config(command=box.yview)
+            self._text_box_menu(box, editable)
+            return box
+
+        heading("TYPE IN ENGLISH")
+        source = text_box(5, editable=True)
+        row = tk.Frame(win, bg=BG)
+        row.pack(fill="x", pady=8)
+        tk.Label(row, text="Into:", bg=BG, fg=MUTED,
+                 font=self.label_font).pack(side="left")
+        language = tk.StringVar(
+            value=LANGUAGES[self.settings["language"]]["native"])
+        chooser = ttk.Combobox(row, textvariable=language, width=9,
+                               state="readonly",
+                               values=list(self.language_codes))
+        chooser.pack(side="left", padx=(6, 12))
+        go = tk.Button(row, text="Translate")
+        go.pack(side="left")
+        note = tk.Label(row, bg=BG, fg=MUTED, anchor="w")
+        note.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        result_title = heading("", pady=(4, 4))
+        result = text_box(5, editable=False)
+        result.config(state="disabled")
+        actions = tk.Frame(win, bg=BG)
+        actions.pack(fill="x", pady=(8, 0))
+        listen = tk.Button(actions, text=f"{SPEAK_GLYPH} Listen",
+                           state="disabled")
+        listen.pack(side="left")
+        copy = tk.Button(actions, text="Copy", state="disabled")
+        copy.pack(side="left", padx=6)
+        tk.Label(actions, text="Ctrl+Enter translates", bg=BG, fg=MUTED,
+                 font=self.key_font).pack(side="right")
+        state = {"number": 0, "text": "", "language": None}
+
+        def code():
+            return self.language_codes[language.get()]
+
+        def show_result_title():
+            result_title.config(text="IN " + LANGUAGES[code()]["name"].upper())
+
+        def translate(event=None):
+            text = source.get("1.0", "end").strip()
+            state["number"] += 1
+            number, target = state["number"], code()
+            go.config(state="disabled")
+            note.config(text=f"Translating with {ai_label(self.settings)}"
+                             "\u2026")
+            show_result_title()
+
+            def work():
+                try:
+                    outcome = translate_text(text, target,
+                                             dict(self.settings)), None
+                except Exception as exc:
+                    outcome = None, str(exc)
+                self._after(done, number, target, *outcome)
+
+            threading.Thread(target=work, daemon=True).start()
+            return "break"  # Ctrl+Enter must not add a new line
+
+        def done(number, target, translation, error):
+            if not win.winfo_exists() or number != state["number"]:
+                return  # window closed, or a newer request was made
+            go.config(state="normal")
+            if error:
+                note.config(text=error)
+                return
+            note.config(text="")
+            state.update(text=translation, language=target)
+            result.config(state="normal")
+            result.delete("1.0", "end")
+            result.insert("1.0", translation)
+            result.config(state="disabled")
+            listen.config(state="normal")
+            copy.config(state="normal")
+
+        def hear():
+            target = state["language"]
+            if piper_available(target):
+                speak_aloud(state["text"], target, self.speed.get())
+            elif piper_ready() and voice_model(target) is None:
+                self.start_voice_download(target)
+                note.config(text=f"The {LANGUAGES[target]['name']} voice is "
+                                 "downloading; try again in a moment.")
+            elif shutil.which("spd-say"):
+                speak_aloud(state["text"], target, self.speed.get())
+            else:
+                note.config(text="No voice is available for this language.")
+
+        def copy_result():
+            win.clipboard_clear()
+            win.clipboard_append(state["text"])
+            note.config(text="Copied.")
+
+        go.config(command=translate)
+        listen.config(command=hear)
+        copy.config(command=copy_result)
+        chooser.bind("<<ComboboxSelected>>",
+                     lambda e: (chooser.selection_clear(), show_result_title()))
+        for sequence in ("<Control-Return>", "<Control-KP_Enter>"):
+            source.bind(sequence, translate)
+        if sys.platform == "darwin":
+            source.bind("<Command-Return>", translate)
+        show_result_title()
+        source.focus_set()
+
+    def _text_box_menu(self, box, editable):
+        """Right-click menu and Ctrl+A for a multi-line text box."""
+        menu = tk.Menu(box, tearoff=False)
+        for label, action in (("Cut", "<<Cut>>"), ("Copy", "<<Copy>>"),
+                              ("Paste", "<<Paste>>")):
+            menu.add_command(label=label,
+                             command=lambda a=action: box.event_generate(a))
+        menu.add_separator()
+        menu.add_command(label="Select all", command=lambda: select_all())
+
+        def select_all(event=None):
+            box.tag_add("sel", "1.0", "end-1c")
+            return "break"
+
+        def popup(event):
+            box.focus_set()
+            selected = bool(box.tag_ranges("sel"))
+            try:
+                has_text = bool(box.clipboard_get())
+            except tk.TclError:
+                has_text = False
+            menu.entryconfig("Cut", state="normal" if editable and selected
+                             else "disabled")
+            menu.entryconfig("Copy", state="normal" if selected
+                             else "disabled")
+            menu.entryconfig("Paste", state="normal" if editable and has_text
+                             else "disabled")
+            menu.tk_popup(event.x_root, event.y_root)
+            return "break"
+
+        for sequence in (["<Button-2>", "<Control-Button-1>"]
+                         if sys.platform == "darwin" else ["<Button-3>"]):
+            box.bind(sequence, popup)
+        for sequence in ("<Control-a>", "<Control-A>"):
+            box.bind(sequence, select_all)
+        if sys.platform == "darwin":
+            box.bind("<Command-a>", select_all)
 
     def open_settings(self):
         """Dialog for choosing which AI writes the summaries."""
