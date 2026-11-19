@@ -102,6 +102,24 @@ the **Web page** box and press Enter or click **Read this page**. Click
   "No readable text found" message. PDFs and other files are not supported.
 - Each page is saved for the day, so loading the same address again is instant.
 
+## Translating your own English
+
+Click **Translate…** at the top right to open a separate window for
+practising with your own sentences.
+
+1. Type or paste English into the top box (up to 2,000 characters).
+2. Choose **Français** or **Español** next to **Into:**. It starts on the
+   language you are reading.
+3. Click **Translate**, or press Ctrl+Enter. The translation appears below,
+   usually within about ten seconds.
+4. Click **► Listen** to hear it at your chosen speech speed, or **Copy** to
+   put it on the clipboard.
+
+Both boxes have the right-click Cut, Copy and Paste menu and Ctrl+A. The window
+can stay open beside the news; clicking **Translate…** again brings it to the
+front. Each translation uses the AI service chosen in Settings, so it counts
+towards that service's usage like the news does.
+
 ## Do I need an API key?
 
 Not if you already use Claude Code. The app can reach an AI in two ways that
